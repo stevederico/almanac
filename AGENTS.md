@@ -14,7 +14,9 @@ Authorization: Bearer $AGENT_KEY
 
 `AGENT_KEY` and `FEED_TOKEN` live in `.env` (local) or the host env. Never log them. Never put them in the ICS URL except `FEED_TOKEN`.
 
-Base URL: `http://127.0.0.1:18788` or `http://localhost:18788` (this Mac only).
+Base URL (prod): `https://almanac.dottie.ai`
+
+Local: `http://127.0.0.1:18788` or `http://localhost:18788`
 
 ## Write (prefer this)
 

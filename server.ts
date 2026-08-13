@@ -93,6 +93,12 @@ export function createApp(opts: AppOptions): Hono {
 
   app.get('/health', (c) => c.json({ ok: true }));
 
+  app.get('/robots.txt', (c) => {
+    return c.text('User-agent: *\nDisallow: /\n', 200, {
+      'content-type': 'text/plain; charset=utf-8',
+    });
+  });
+
   app.get('/feed/:token', (c) => {
     const token = feedTokenOf(c.req.param('token'));
     if (!safeEqual(token, opts.feedToken)) {
@@ -209,7 +215,7 @@ if (isMain()) {
     binds,
     port: cfg.port,
     scheme,
-    feed: `${scheme}://localhost:${cfg.port}/feed/<token>.ics`,
+    feed: `${scheme}://${cfg.host}:${cfg.port}/feed/<token>.ics`,
   }));
 }
 

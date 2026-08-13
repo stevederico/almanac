@@ -28,6 +28,9 @@ describe('readConfig', () => {
     assert.equal(cfg.dbPath, '/tmp/c.db');
     assert.equal(cfg.feedToken, 'feed');
     assert.equal(cfg.agentKey, 'key');
+    const prod = readConfig({ HOST: '::', PORT: '8000' });
+    assert.equal(prod.host, '::');
+    assert.equal(prod.port, 8000);
   });
 });
 

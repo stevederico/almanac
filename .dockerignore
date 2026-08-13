@@ -1,0 +1,10 @@
+.env
+.env.*
+.git
+node_modules
+data
+*.db
+tls
+*.pem
+bun.lock
+railway.json
