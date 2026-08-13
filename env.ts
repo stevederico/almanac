@@ -35,6 +35,8 @@ export type Config = {
   dbPath: string;
   feedToken: string;
   agentKey: string;
+  tlsKey: string;
+  tlsCert: string;
 };
 
 const DEFAULT_PORT = 18788;
@@ -51,5 +53,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dbPath: env.DB_PATH ?? './data/calendar.db',
     feedToken: env.FEED_TOKEN ?? '',
     agentKey: env.AGENT_KEY ?? '',
+    tlsKey: env.TLS_KEY ?? '',
+    tlsCert: env.TLS_CERT ?? '',
   };
 }

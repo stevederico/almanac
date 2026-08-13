@@ -1,5 +1,7 @@
 node_modules/
 data/
+tls/
+*.pem
 *.db
 .env
 .DS_Store

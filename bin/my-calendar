@@ -1,7 +1,7 @@
 #!/bin/zsh
 # my-calendar — local ICS feed. LaunchAgent: com.stevederico.my-calendar
 # Runtime lives in ~/.local/share (launchd cannot read Desktop).
-# Usage: my-calendar {start|stop|restart|status|ensure|url}
+# Usage: my-calendar {start|stop|restart|status|ensure|url|subscribe}
 
 set -euo pipefail
 export PATH="/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/bin:/bin:${PATH:-}"
@@ -31,16 +31,19 @@ load_env() {
         PORT) PORT="${value}" ;;
         FEED_TOKEN) FEED_TOKEN="${value}" ;;
         AGENT_KEY) AGENT_KEY="${value}" ;;
+        TLS_KEY) TLS_KEY="${value}" ;;
+        TLS_CERT) TLS_CERT="${value}" ;;
       esac
     done < "${envf}"
   fi
   HOST="${HOST:-127.0.0.1}"
   PORT="${PORT:-18788}"
-  HEALTH="http://${HOST}:${PORT}/health"
+  SCHEME="https"
+  HEALTH="https://${HOST}:${PORT}/health"
 }
 
 up() {
-  /usr/bin/curl -sf -o /dev/null --connect-timeout 1 "${HEALTH}" 2>/dev/null
+  /usr/bin/curl -sfk -o /dev/null --connect-timeout 1 "${HEALTH}" 2>/dev/null
 }
 
 sync_runtime() {
@@ -53,6 +56,7 @@ sync_runtime() {
     "${ROOT}/" "${RUN}/"
   load_env
   umask 077
+  ensure_tls
   cat > "${RUN}/.env" <<EOF
 HOST=${HOST}
 PORT=${PORT}
@@ -60,6 +64,8 @@ CAL_NAME=My Calendar
 DB_PATH=${RUN}/data/calendar.db
 FEED_TOKEN=${FEED_TOKEN:-}
 AGENT_KEY=${AGENT_KEY:-}
+TLS_KEY=${TLS_KEY}
+TLS_CERT=${TLS_CERT}
 EOF
 }
 
@@ -115,12 +121,42 @@ cmd_url() {
     echo "FEED_TOKEN missing in ${ROOT}/.env" >&2
     return 1
   fi
-  echo "http://${HOST}:${PORT}/feed/${FEED_TOKEN}.ics"
+  echo "https://${HOST}:${PORT}/feed/${FEED_TOKEN}.ics"
+}
+
+ensure_tls() {
+  mkdir -p "${RUN}/tls"
+  local key="${RUN}/tls/key.pem"
+  local cert="${RUN}/tls/cert.pem"
+  if [[ ! -f "${key}" || ! -f "${cert}" ]]; then
+    /usr/bin/openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+      -keyout "${key}" -out "${cert}" \
+      -subj "/CN=127.0.0.1" \
+      -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" \
+      >/dev/null 2>&1
+  fi
+  TLS_KEY="${key}"
+  TLS_CERT="${cert}"
+  # login keychain; ignore if already trusted or needs a click
+  /usr/bin/security add-trusted-cert -d -r trustAsRoot \
+    -k "${HOME}/Library/Keychains/login.keychain-db" \
+    "${cert}" >/dev/null 2>&1 || true
+}
+
+cmd_subscribe() {
+  local url
+  url="$(cmd_url)"
+  printf '%s' "${url}" | /usr/bin/pbcopy
+  /usr/bin/open -a Calendar
+  echo "copied https subscribe URL"
+  echo "Calendar → File → New Calendar Subscription → paste"
+  echo "do not use webcal://"
 }
 
 cmd_start() {
   load_env
   sync_runtime
+  ensure_tls
   write_plist
   launchctl bootout "gui/${UID_NUM}/${LABEL}" 2>/dev/null || true
   launchctl bootstrap "gui/${UID_NUM}" "${PLIST}"
@@ -158,8 +194,9 @@ case "${cmd}" in
   status) cmd_status ;;
   ensure) cmd_ensure ;;
   url) cmd_url ;;
+  subscribe) cmd_subscribe ;;
   *)
-    echo "usage: my-calendar {start|stop|restart|status|ensure|url}" >&2
+    echo "usage: my-calendar {start|stop|restart|status|ensure|url|subscribe}" >&2
     exit 2
     ;;
 esac

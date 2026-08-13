@@ -1,6 +1,8 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
+import { createServer } from 'node:https';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -73,6 +75,21 @@ function icsOf(calName: string, events: EventRow[]): string {
 /** Hono app: public ICS feed + bearer agent API. */
 export function createApp(opts: AppOptions): Hono {
   const app = new Hono();
+
+  app.use(async (c, next) => {
+    const t0 = Date.now();
+    await next();
+    const path = c.req.path.replace(opts.feedToken, '<token>');
+    console.log(JSON.stringify({
+      t: new Date().toISOString(),
+      msg: 'req',
+      method: c.req.method,
+      path,
+      status: c.res.status,
+      ms: Date.now() - t0,
+      ua: c.req.header('user-agent') ?? '',
+    }));
+  });
 
   app.get('/health', (c) => c.json({ ok: true }));
 
@@ -167,12 +184,27 @@ if (isMain()) {
     agentKey: cfg.agentKey,
     calName: cfg.calName,
   });
-  serve({ fetch: app.fetch, port: cfg.port, hostname: cfg.host });
+  const scheme = cfg.tlsKey && cfg.tlsCert ? 'https' : 'http';
+  if (scheme === 'https') {
+    serve({
+      fetch: app.fetch,
+      port: cfg.port,
+      hostname: cfg.host,
+      createServer,
+      serverOptions: {
+        key: readFileSync(cfg.tlsKey),
+        cert: readFileSync(cfg.tlsCert),
+      },
+    });
+  } else {
+    serve({ fetch: app.fetch, port: cfg.port, hostname: cfg.host });
+  }
   console.log(JSON.stringify({
     t: new Date().toISOString(),
     msg: 'listen',
     host: cfg.host,
     port: cfg.port,
-    feed: `http://${cfg.host}:${cfg.port}/feed/<token>.ics`,
+    scheme,
+    feed: `${scheme}://${cfg.host}:${cfg.port}/feed/<token>.ics`,
   }));
 }
