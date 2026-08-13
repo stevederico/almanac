@@ -1,6 +1,6 @@
-# Run (this Mac)
+# Run
 
-No host. Loopback only.
+Prod: `https://almanac.dottie.ai` (Railway + dottie-proxy). Local loopback still works.
 
 1. `cp .env.example .env` and set `FEED_TOKEN` + `AGENT_KEY`.
 2. `bun install`
