@@ -56,6 +56,7 @@ function page(title: string, body: string): string {
   <style>
     :root { color-scheme: dark; }
     body { font: 16px/1.45 ui-sans-serif, system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1.25rem; color: #e8e8e8; background: #111; }
+    .mascot { display: block; width: 176px; height: 176px; margin: 0 0 1.25rem; }
     h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
     pre { background: #1c1c1c; padding: 0.9rem 1rem; overflow-x: auto; }
@@ -76,6 +77,7 @@ ${body}
 export function htmlHome(base: string): string {
   const origin = base.replace(/\/$/, '');
   return page('Almanac', `
+  <img class="mascot" src="/mascot.webp" width="176" height="176" alt="Almanac jackrabbit clerk">
   <h1>Almanac</h1>
   <p>Agent-first calendar. Request a calendar. Subscribe the URL in Apple Calendar. Agents write the events.</p>
   <p class="muted">Humans: create one below, then Calendar → File → New Calendar Subscription → paste. Use https, not webcal.</p>

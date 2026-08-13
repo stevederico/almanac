@@ -1,4 +1,5 @@
 import { serve } from '@hono/node-server';
+import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:https';
@@ -113,6 +114,8 @@ export function createApp(opts: AppOptions): Hono {
       ua: c.req.header('user-agent') ?? '',
     }));
   });
+
+  app.use('/mascot.webp', serveStatic({ root: './public' }));
 
   app.get('/health', (c) => c.json({ ok: true }));
 
