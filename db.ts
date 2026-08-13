@@ -1,8 +1,16 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { nextDate } from './ics.ts';
+
+export type CalendarRow = {
+  id: string;
+  feedToken: string;
+  agentKey: string;
+  name: string;
+  createdAt: string;
+};
 
 export type EventRow = {
   uid: string;
@@ -42,12 +50,51 @@ export type EventPatch = {
 const UID_RE = /^[A-Za-z0-9._@-]{1,200}$/;
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-export function openDb(dbPath: string): DatabaseSync {
-  mkdirSync(dirname(dbPath), { recursive: true });
-  const db = new DatabaseSync(dbPath);
+function tableNames(db: DatabaseSync): string[] {
+  const rows = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all();
+  return rows.flatMap((r) => {
+    if (!isRecord(r) || typeof r.name !== 'string') return [];
+    return [r.name];
+  });
+}
+
+function columnNames(db: DatabaseSync, table: string): string[] {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+  return rows.flatMap((r) => {
+    if (!isRecord(r) || typeof r.name !== 'string') return [];
+    return [r.name];
+  });
+}
+
+function migrateEvents(db: DatabaseSync): void {
+  const tables = tableNames(db);
+  if (!tables.includes('events')) {
+    db.exec(`
+      CREATE TABLE events (
+        calendar_id TEXT NOT NULL,
+        uid TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '',
+        dtstart TEXT NOT NULL,
+        dtend TEXT NOT NULL,
+        all_day INTEGER NOT NULL DEFAULT 0,
+        transparent INTEGER NOT NULL DEFAULT 1,
+        sequence INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (calendar_id, uid)
+      );
+      CREATE INDEX IF NOT EXISTS idx_events_cal_start ON events(calendar_id, dtstart);
+    `);
+    return;
+  }
+  const cols = columnNames(db, 'events');
+  if (cols.includes('calendar_id')) return;
   db.exec(`
-    CREATE TABLE IF NOT EXISTS events (
-      uid TEXT PRIMARY KEY,
+    CREATE TABLE events_new (
+      calendar_id TEXT NOT NULL,
+      uid TEXT NOT NULL,
       summary TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       location TEXT NOT NULL DEFAULT '',
@@ -57,11 +104,121 @@ export function openDb(dbPath: string): DatabaseSync {
       transparent INTEGER NOT NULL DEFAULT 1,
       sequence INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (calendar_id, uid)
     );
-    CREATE INDEX IF NOT EXISTS idx_events_start ON events(dtstart);
+    INSERT INTO events_new (
+      calendar_id, uid, summary, description, location, dtstart, dtend,
+      all_day, transparent, sequence, created_at, updated_at
+    )
+    SELECT 'home', uid, summary, description, location, dtstart, dtend,
+           all_day, transparent, sequence, created_at, updated_at
+    FROM events;
+    DROP TABLE events;
+    ALTER TABLE events_new RENAME TO events;
+    CREATE INDEX IF NOT EXISTS idx_events_cal_start ON events(calendar_id, dtstart);
   `);
+}
+
+export function openDb(dbPath: string): DatabaseSync {
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS calendars (
+      id TEXT PRIMARY KEY,
+      feed_token TEXT NOT NULL UNIQUE,
+      agent_key TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
+  migrateEvents(db);
   return db;
+}
+
+function secret(): string {
+  return randomBytes(24).toString('hex');
+}
+
+function calendarFrom(raw: unknown): CalendarRow | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.id !== 'string') return null;
+  if (typeof raw.feed_token !== 'string') return null;
+  if (typeof raw.agent_key !== 'string') return null;
+  if (typeof raw.name !== 'string') return null;
+  if (typeof raw.created_at !== 'string') return null;
+  return {
+    id: raw.id,
+    feedToken: raw.feed_token,
+    agentKey: raw.agent_key,
+    name: raw.name,
+    createdAt: raw.created_at,
+  };
+}
+
+export function getCalendar(db: DatabaseSync, id: string): CalendarRow | null {
+  const raw = db.prepare(`
+    SELECT id, feed_token, agent_key, name, created_at
+    FROM calendars WHERE id = ?
+  `).get(id);
+  return calendarFrom(raw);
+}
+
+export function getCalendarByFeedToken(db: DatabaseSync, token: string): CalendarRow | null {
+  const raw = db.prepare(`
+    SELECT id, feed_token, agent_key, name, created_at
+    FROM calendars WHERE feed_token = ?
+  `).get(token);
+  return calendarFrom(raw);
+}
+
+export function createCalendar(
+  db: DatabaseSync,
+  input: { name?: string; id?: string; feedToken?: string; agentKey?: string } = {},
+): CalendarRow | { error: string } {
+  const name = (input.name ?? 'Almanac').trim() || 'Almanac';
+  if (name.length > 80) return { error: 'name is too long' };
+  const id = input.id ?? `cal_${randomBytes(8).toString('hex')}`;
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO calendars (id, feed_token, agent_key, name, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(id, input.feedToken ?? secret(), input.agentKey ?? secret(), name, now);
+  const saved = getCalendar(db, id);
+  if (!saved) return { error: 'failed to create calendar' };
+  return saved;
+}
+
+/** Keep a pre-existing env feed working as calendar `home`. */
+export function ensureHomeCalendar(
+  db: DatabaseSync,
+  home: { feedToken: string; agentKey: string; name: string },
+): CalendarRow | { error: string } {
+  const existing = getCalendar(db, 'home');
+  if (existing) return existing;
+  const byToken = getCalendarByFeedToken(db, home.feedToken);
+  if (byToken) return byToken;
+  return createCalendar(db, {
+    id: 'home',
+    name: home.name,
+    feedToken: home.feedToken,
+    agentKey: home.agentKey,
+  });
+}
+
+export function jsonCalendar(
+  row: CalendarRow,
+  base: string,
+): Record<string, unknown> {
+  const origin = base.replace(/\/$/, '');
+  return {
+    id: row.id,
+    name: row.name,
+    subscribe: `${origin}/feed/${row.feedToken}.ics`,
+    write: `${origin}/v1/c/${row.id}/events`,
+    key: row.agentKey,
+    createdAt: row.createdAt,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -198,37 +355,42 @@ export function parseEventPatch(body: unknown): EventPatch | { error: string } {
   return patch;
 }
 
-export function listEvents(db: DatabaseSync): EventRow[] {
+export function listEvents(db: DatabaseSync, calendarId: string): EventRow[] {
   const rows = db.prepare(`
     SELECT uid, summary, description, location, dtstart, dtend,
            all_day, transparent, sequence, created_at, updated_at
     FROM events
+    WHERE calendar_id = ?
     ORDER BY dtstart ASC
-  `).all();
+  `).all(calendarId);
   return rows.flatMap((r) => {
     const row = rowFrom(r);
     return row ? [row] : [];
   });
 }
 
-export function getEvent(db: DatabaseSync, uid: string): EventRow | null {
+export function getEvent(db: DatabaseSync, calendarId: string, uid: string): EventRow | null {
   const raw = db.prepare(`
     SELECT uid, summary, description, location, dtstart, dtend,
            all_day, transparent, sequence, created_at, updated_at
     FROM events
-    WHERE uid = ?
-  `).get(uid);
+    WHERE calendar_id = ? AND uid = ?
+  `).get(calendarId, uid);
   return rowFrom(raw);
 }
 
-export function upsertEvent(db: DatabaseSync, input: EventInput): EventRow | { error: string } {
+export function upsertEvent(
+  db: DatabaseSync,
+  calendarId: string,
+  input: EventInput,
+): EventRow | { error: string } {
   const allDay = input.allDay === true || YMD_RE.test(input.start);
   const times = resolveTimes(input.start, input.end, allDay);
   if ('error' in times) return times;
   const now = new Date().toISOString();
   const uid = input.uid ?? `evt-${randomUUID()}`;
   if (!UID_RE.test(uid)) return { error: 'uid must be 1-200 chars: letters, digits, . _ @ -' };
-  const existing = getEvent(db, uid);
+  const existing = getEvent(db, calendarId, uid);
   const summary = input.summary;
   const description = input.description ?? existing?.description ?? '';
   const location = input.location ?? existing?.location ?? '';
@@ -238,7 +400,7 @@ export function upsertEvent(db: DatabaseSync, input: EventInput): EventRow | { e
       UPDATE events
       SET summary = ?, description = ?, location = ?, dtstart = ?, dtend = ?,
           all_day = ?, transparent = ?, sequence = sequence + 1, updated_at = ?
-      WHERE uid = ?
+      WHERE calendar_id = ? AND uid = ?
     `).run(
       summary,
       description,
@@ -248,15 +410,17 @@ export function upsertEvent(db: DatabaseSync, input: EventInput): EventRow | { e
       times.allDay ? 1 : 0,
       transparent ? 1 : 0,
       now,
+      calendarId,
       uid,
     );
   } else {
     db.prepare(`
       INSERT INTO events (
-        uid, summary, description, location, dtstart, dtend,
+        calendar_id, uid, summary, description, location, dtstart, dtend,
         all_day, transparent, sequence, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     `).run(
+      calendarId,
       uid,
       summary,
       description,
@@ -269,17 +433,18 @@ export function upsertEvent(db: DatabaseSync, input: EventInput): EventRow | { e
       now,
     );
   }
-  const saved = getEvent(db, uid);
+  const saved = getEvent(db, calendarId, uid);
   if (!saved) return { error: 'failed to save event' };
   return saved;
 }
 
 export function patchEvent(
   db: DatabaseSync,
+  calendarId: string,
   uid: string,
   patch: EventPatch,
 ): EventRow | { error: string } {
-  const existing = getEvent(db, uid);
+  const existing = getEvent(db, calendarId, uid);
   if (!existing) return { error: 'not found' };
   const start = patch.start ?? existing.dtstart;
   const allDay = patch.allDay ?? existing.allDay;
@@ -291,7 +456,7 @@ export function patchEvent(
     UPDATE events
     SET summary = ?, description = ?, location = ?, dtstart = ?, dtend = ?,
         all_day = ?, transparent = ?, sequence = sequence + 1, updated_at = ?
-    WHERE uid = ?
+    WHERE calendar_id = ? AND uid = ?
   `).run(
     patch.summary ?? existing.summary,
     patch.description ?? existing.description,
@@ -301,15 +466,19 @@ export function patchEvent(
     times.allDay ? 1 : 0,
     (patch.transparent ?? existing.transparent) ? 1 : 0,
     now,
+    calendarId,
     uid,
   );
-  const saved = getEvent(db, uid);
+  const saved = getEvent(db, calendarId, uid);
   if (!saved) return { error: 'failed to save event' };
   return saved;
 }
 
-export function deleteEvent(db: DatabaseSync, uid: string): boolean {
-  const result = db.prepare('DELETE FROM events WHERE uid = ?').run(uid);
+export function deleteEvent(db: DatabaseSync, calendarId: string, uid: string): boolean {
+  const result = db.prepare('DELETE FROM events WHERE calendar_id = ? AND uid = ?').run(
+    calendarId,
+    uid,
+  );
   return Number(result.changes) > 0;
 }
 

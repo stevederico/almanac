@@ -1,130 +1,80 @@
 # almanac
 
-ICS feed for Apple Calendar. Agents write events over HTTP. Humans only subscribe.
+Agent-first ICS calendar. Request a calendar. Subscribe the URL. Write events.
 
-## When to use
-
-Add, move, or drop something on Steve's calendar. Do not open Calendar.app. Do not build a UI.
-
-## Auth
-
-```
-Authorization: Bearer $AGENT_KEY
-```
-
-`AGENT_KEY` and `FEED_TOKEN` live in `.env` (local) or the host env. Never log them. Never put them in the ICS URL except `FEED_TOKEN`.
-
-Base URL (prod): `https://almanac.dottie.ai`
-
-Local: `http://127.0.0.1:18788` or `http://localhost:18788`
-
-## Write (prefer this)
-
-Idempotent. Same `uid` updates in place and bumps `SEQUENCE` so Calendar replaces the event.
+## Create
 
 ```bash
-curl -sS -X PUT "$BASE/v1/events/dentist-2026-08-18" \
-  -H "Authorization: Bearer $AGENT_KEY" \
+curl -sS -X POST https://almanac.dottie.ai/calendars \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Roadmap"}'
+```
+
+Success `201`:
+
+```json
+{
+  "id": "cal_ab12cd34ef56ab78",
+  "name": "Roadmap",
+  "subscribe": "https://almanac.dottie.ai/feed/….ics",
+  "write": "https://almanac.dottie.ai/v1/c/cal_ab12cd34ef56ab78/events",
+  "key": "…",
+  "createdAt": "2026-08-13T20:00:00.000Z"
+}
+```
+
+Store `id` and `key`. The key is the write secret.
+
+## Write
+
+```bash
+curl -sS -X PUT "$WRITE/dentist-2026-08-18" \
+  -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "summary": "Dentist",
     "start": "2026-08-18T09:00:00-07:00",
-    "end": "2026-08-18T09:45:00-07:00",
-    "location": "Fillmore"
+    "end": "2026-08-18T09:45:00-07:00"
   }'
 ```
 
-Success `201` (create) or `200` (update):
-
-```json
-{
-  "uid": "dentist-2026-08-18",
-  "summary": "Dentist",
-  "description": "",
-  "location": "Fillmore",
-  "start": "2026-08-18T16:00:00.000Z",
-  "end": "2026-08-18T16:45:00.000Z",
-  "allDay": false,
-  "transparent": true,
-  "sequence": 0,
-  "createdAt": "2026-08-13T17:20:00.000Z",
-  "updatedAt": "2026-08-13T17:20:00.000Z"
-}
-```
+`201` create or `200` update. Same `uid` replaces in place.
 
 ## Fields
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `summary` | string | yes | ≤512 |
-| `start` | string | yes | ISO-8601 datetime, or `YYYY-MM-DD` for all-day |
+| `start` | string | yes | ISO-8601, or `YYYY-MM-DD` for all-day |
 | `end` | string | no | Default +1 hour, or next day if all-day |
-| `uid` | string | PUT path | `[A-Za-z0-9._@-]{1,200}`. Pick a stable id. |
+| `uid` | string | PUT path | `[A-Za-z0-9._@-]{1,200}` |
 | `location` | string | no | ≤512 |
 | `description` | string | no | ≤4000 |
-| `allDay` | bool | no | Or inferred from `YYYY-MM-DD` start |
-| `transparent` | bool | no | Default `true` (does not mark busy) |
+| `allDay` | bool | no | Or inferred from date-only start |
+| `transparent` | bool | no | Default `true` |
 
-## Other endpoints
-
-### Create without a uid
+## Other
 
 ```bash
-curl -sS -X POST "$BASE/v1/events" \
-  -H "Authorization: Bearer $AGENT_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"summary":"Call","start":"2026-08-14T15:00:00-07:00"}'
+curl -sS "$WRITE" -H "Authorization: Bearer $KEY"
+curl -sS -X PATCH "$WRITE/dentist-2026-08-18" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"location":"Fillmore"}'
+curl -sS -X DELETE "$WRITE/dentist-2026-08-18" -H "Authorization: Bearer $KEY"
 ```
 
-Returns `201` with a generated `evt-<uuid>` uid. Prefer PUT with your own uid.
+Subscribe: paste `subscribe` in Calendar → File → New Calendar Subscription. Use `https://`, not `webcal://`.
 
-### Patch
-
-```bash
-curl -sS -X PATCH "$BASE/v1/events/dentist-2026-08-18" \
-  -H "Authorization: Bearer $AGENT_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"start":"2026-08-18T10:00:00-07:00","end":"2026-08-18T10:45:00-07:00"}'
-```
-
-### List / get / delete
-
-```bash
-curl -sS "$BASE/v1/events" -H "Authorization: Bearer $AGENT_KEY"
-curl -sS "$BASE/v1/events/dentist-2026-08-18" -H "Authorization: Bearer $AGENT_KEY"
-curl -sS -X DELETE "$BASE/v1/events/dentist-2026-08-18" -H "Authorization: Bearer $AGENT_KEY"
-```
-
-Delete is `204`. The uid disappears from the feed; Calendar drops it on the next poll.
-
-### Subscribe (humans)
-
-`GET $BASE/feed/$FEED_TOKEN.ics` → `text/calendar`. No bearer. Wrong token → `404`.
+Machine docs: `GET /llms.txt`. Humans: `GET /`.
 
 ## Errors
 
-```json
-{"error":"unauthorized"}
-```
-
-`401` missing/wrong bearer. Fix: send `Authorization: Bearer $AGENT_KEY`.
-
-```json
-{"error":"summary is required"}
-```
-
-`400` validation. Fix: send `summary` + `start`.
-
-```json
-{"error":"not found"}
-```
-
-`404` unknown uid (GET/PATCH/DELETE) or wrong feed token.
+`401` `{"error":"unauthorized"}` — missing or wrong key.
+`400` `{"error":"summary is required"}` — send `summary` + `start`.
+`404` `{"error":"not found"}` — bad uid or bad feed token.
 
 ## Rules
 
-- Stable `uid` per event. New uid = duplicate on the phone.
-- Timed events: include a timezone offset (`-07:00`). Stored as UTC.
-- All-day: `"start": "2026-08-20"` (no clock).
+- Stable `uid` per event. New uid = duplicate.
+- Timed events need a timezone offset.
+- All-day: `"start": "2026-08-20"`.
 - No RRULE. One row per occurrence.
-- Calendar polls. Changes are not instant. Refresh the calendar if you need it now.
+- Calendar polls. Refresh if it is missing.

@@ -1,6 +1,6 @@
 # almanac
 
-an ics feed agents write and apple calendar reads. runs on this mac.
+agent-first calendar. request one, subscribe the url, agents write events.
 
 Prod: `https://almanac.dottie.ai`. Local: `http://localhost:18788`. Do not use `webcal://`.
 
@@ -25,9 +25,9 @@ Calendar → File → New Calendar Subscription → paste that URL.
 - **Stable UIDs** so edits replace, not duplicate
 
 ### Agent API
-- **Bearer key** on `/v1/*`
-- **PUT by uid** is the write path
-- Contract: [AGENTS.md](AGENTS.md)
+- **POST /calendars** returns `id`, `subscribe`, `write`, and `key`
+- **PUT /v1/c/:id/events/:uid** is the write path
+- Contract: [AGENTS.md](AGENTS.md) · machine: `/llms.txt`
 
 This Mac only. iPhone cannot see `127.0.0.1`. Tailscale later if you want the phone.
 
