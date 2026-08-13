@@ -1,0 +1,165 @@
+#!/bin/zsh
+# my-calendar — local ICS feed. LaunchAgent: com.stevederico.my-calendar
+# Runtime lives in ~/.local/share (launchd cannot read Desktop).
+# Usage: my-calendar {start|stop|restart|status|ensure|url}
+
+set -euo pipefail
+export PATH="/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/bin:/bin:${PATH:-}"
+
+ROOT="${MYCAL_ROOT:-$HOME/Desktop/projects/my-calendar}"
+RUN="${MYCAL_RUN:-$HOME/.local/share/my-calendar}"
+LABEL="com.stevederico.my-calendar"
+PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
+HOST="${MYCAL_HOST:-127.0.0.1}"
+PORT="${MYCAL_PORT:-18788}"
+HEALTH="http://${HOST}:${PORT}/health"
+UID_NUM="$(id -u)"
+
+load_env() {
+  local envf="${ROOT}/.env" line key value
+  if [[ -f "${envf}" && ! -L "${envf}" ]]; then
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      [[ "${line}" == \#* || -z "${line}" ]] && continue
+      key="${line%%=*}"
+      value="${line#*=}"
+      value="${value#\"}"
+      value="${value%\"}"
+      value="${value#\'}"
+      value="${value%\'}"
+      case "${key}" in
+        HOST) HOST="${value}" ;;
+        PORT) PORT="${value}" ;;
+        FEED_TOKEN) FEED_TOKEN="${value}" ;;
+        AGENT_KEY) AGENT_KEY="${value}" ;;
+      esac
+    done < "${envf}"
+  fi
+  HOST="${HOST:-127.0.0.1}"
+  PORT="${PORT:-18788}"
+  HEALTH="http://${HOST}:${PORT}/health"
+}
+
+up() {
+  /usr/bin/curl -sf -o /dev/null --connect-timeout 1 "${HEALTH}" 2>/dev/null
+}
+
+sync_runtime() {
+  mkdir -p "${RUN}/data"
+  /usr/bin/rsync -a --delete \
+    --exclude '.git/' \
+    --exclude 'data/' \
+    --exclude '.env' \
+    --exclude 'bun.lock' \
+    "${ROOT}/" "${RUN}/"
+  load_env
+  umask 077
+  cat > "${RUN}/.env" <<EOF
+HOST=${HOST}
+PORT=${PORT}
+CAL_NAME=My Calendar
+DB_PATH=${RUN}/data/calendar.db
+FEED_TOKEN=${FEED_TOKEN:-}
+AGENT_KEY=${AGENT_KEY:-}
+EOF
+}
+
+write_plist() {
+  mkdir -p "${HOME}/Library/LaunchAgents"
+  cat > "${PLIST}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>${LABEL}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/node</string>
+		<string>${RUN}/server.ts</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>${RUN}</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+		<key>HOME</key>
+		<string>${HOME}</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>${HOME}/Library/Logs/my-calendar.out</string>
+	<key>StandardErrorPath</key>
+	<string>${HOME}/Library/Logs/my-calendar.err</string>
+</dict>
+</plist>
+EOF
+}
+
+cmd_status() {
+  load_env
+  if up; then
+    echo "up  ${HEALTH}"
+    return 0
+  fi
+  echo "down  ${HEALTH}"
+  return 1
+}
+
+cmd_url() {
+  load_env
+  if [[ -z "${FEED_TOKEN:-}" ]]; then
+    echo "FEED_TOKEN missing in ${ROOT}/.env" >&2
+    return 1
+  fi
+  echo "http://${HOST}:${PORT}/feed/${FEED_TOKEN}.ics"
+}
+
+cmd_start() {
+  load_env
+  sync_runtime
+  write_plist
+  launchctl bootout "gui/${UID_NUM}/${LABEL}" 2>/dev/null || true
+  launchctl bootstrap "gui/${UID_NUM}" "${PLIST}"
+  local i
+  for i in {1..40}; do
+    if up; then
+      echo "up  ${HEALTH}"
+      return 0
+    fi
+    sleep 0.15
+  done
+  echo "failed to start; see ~/Library/Logs/my-calendar.err" >&2
+  return 1
+}
+
+cmd_stop() {
+  launchctl bootout "gui/${UID_NUM}/${LABEL}" 2>/dev/null || true
+  echo "stopped"
+}
+
+cmd_ensure() {
+  load_env
+  if up; then
+    echo "up  ${HEALTH}"
+    return 0
+  fi
+  cmd_start
+}
+
+cmd="${1:-status}"
+case "${cmd}" in
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_stop; cmd_start ;;
+  status) cmd_status ;;
+  ensure) cmd_ensure ;;
+  url) cmd_url ;;
+  *)
+    echo "usage: my-calendar {start|stop|restart|status|ensure|url}" >&2
+    exit 2
+    ;;
+esac

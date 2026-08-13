@@ -1,0 +1,19 @@
+{
+  "name": "my-calendar",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ICS feed agents write; Apple Calendar subscribes",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node server.ts",
+    "dev": "node --watch server.ts",
+    "test": "node --test --test-isolation=none env.test.ts ics.test.ts db.test.ts server.test.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "1.14.1",
+    "hono": "4.7.11"
+  }
+}
