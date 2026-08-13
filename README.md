@@ -2,7 +2,7 @@
 
 an ics feed agents write and apple calendar reads. runs on this mac.
 
-No cloud. No app. Bind is `https://127.0.0.1:18788`. Calendar on this Mac polls it. Do not use `webcal://`.
+No cloud. No app. Bind is `http://localhost:18788` (v4 + v6). Calendar on this Mac polls it. Do not use `webcal://`.
 
 ## Quick Start
 

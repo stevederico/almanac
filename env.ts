@@ -45,7 +45,7 @@ const DEFAULT_PORT = 18788;
 export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const portRaw = env.PORT ?? String(DEFAULT_PORT);
   const port = Number.parseInt(portRaw, 10);
-  const host = (env.HOST ?? '127.0.0.1').trim() || '127.0.0.1';
+  const host = (env.HOST ?? 'localhost').trim() || 'localhost';
   return {
     port: Number.isFinite(port) && port > 0 ? port : DEFAULT_PORT,
     host,

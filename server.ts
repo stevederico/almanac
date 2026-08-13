@@ -185,26 +185,38 @@ if (isMain()) {
     calName: cfg.calName,
   });
   const scheme = cfg.tlsKey && cfg.tlsCert ? 'https' : 'http';
-  if (scheme === 'https') {
-    serve({
-      fetch: app.fetch,
-      port: cfg.port,
-      hostname: cfg.host,
-      createServer,
-      serverOptions: {
-        key: readFileSync(cfg.tlsKey),
-        cert: readFileSync(cfg.tlsCert),
-      },
-    });
-  } else {
-    serve({ fetch: app.fetch, port: cfg.port, hostname: cfg.host });
+  const binds = listenHosts(cfg.host);
+  for (const hostname of binds) {
+    if (scheme === 'https') {
+      serve({
+        fetch: app.fetch,
+        port: cfg.port,
+        hostname,
+        createServer,
+        serverOptions: {
+          key: readFileSync(cfg.tlsKey),
+          cert: readFileSync(cfg.tlsCert),
+        },
+      });
+    } else {
+      serve({ fetch: app.fetch, port: cfg.port, hostname });
+    }
   }
   console.log(JSON.stringify({
     t: new Date().toISOString(),
     msg: 'listen',
     host: cfg.host,
+    binds,
     port: cfg.port,
     scheme,
-    feed: `${scheme}://${cfg.host}:${cfg.port}/feed/<token>.ics`,
+    feed: `${scheme}://localhost:${cfg.port}/feed/<token>.ics`,
   }));
+}
+
+/** Loopback hostnames must listen on v4 and v6. `localhost` prefers ::1. */
+function listenHosts(host: string): string[] {
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+    return ['127.0.0.1', '::1'];
+  }
+  return [host];
 }

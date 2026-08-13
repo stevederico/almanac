@@ -9,7 +9,7 @@ describe('readConfig', () => {
   it('defaults port and name', () => {
     const cfg = readConfig({});
     assert.equal(cfg.port, 18788);
-    assert.equal(cfg.host, '127.0.0.1');
+    assert.equal(cfg.host, 'localhost');
     assert.equal(cfg.calName, 'My Calendar');
     assert.equal(cfg.tlsKey, '');
     assert.equal(cfg.tlsCert, '');
