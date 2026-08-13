@@ -49,7 +49,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     port: Number.isFinite(port) && port > 0 ? port : DEFAULT_PORT,
     host,
-    calName: (env.CAL_NAME ?? 'My Calendar').trim() || 'My Calendar',
+    calName: (env.CAL_NAME ?? 'Almanac').trim() || 'Almanac',
     dbPath: env.DB_PATH ?? './data/calendar.db',
     feedToken: env.FEED_TOKEN ?? '',
     agentKey: env.AGENT_KEY ?? '',

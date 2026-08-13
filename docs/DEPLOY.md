@@ -4,11 +4,11 @@ No host. Loopback only.
 
 1. `cp .env.example .env` and set `FEED_TOKEN` + `AGENT_KEY`.
 2. `bun install`
-3. `./bin/my-calendar start` — copies the LaunchAgent and bootstraps it.
-4. `./bin/my-calendar url` — subscribe that URL in Calendar.app.
-5. Optional: `ln -sf ~/Desktop/projects/my-calendar/bin/my-calendar ~/.local/bin/my-calendar`
+3. `./bin/almanac start` — copies the LaunchAgent and bootstraps it.
+4. `./bin/almanac url` — subscribe that URL in Calendar.app.
+5. Optional: `cp ~/Desktop/projects/almanac/bin/almanac ~/.local/bin/almanac`
 
-Runtime copy lives in `~/.local/share/my-calendar` (launchd cannot read Desktop).
-Logs: `~/Library/Logs/my-calendar.out` and `my-calendar.err`.
+Runtime copy lives in `~/.local/share/almanac` (launchd cannot read Desktop).
+Logs: `~/Library/Logs/almanac.out` and `almanac.err`.
 
 iPhone needs a reachable hostname (Tailscale). Do not bind `0.0.0.0` unless you mean to.

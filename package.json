@@ -1,8 +1,8 @@
 {
-  "name": "my-calendar",
+  "name": "almanac",
   "private": true,
   "version": "0.1.0",
-  "description": "ICS feed agents write; Apple Calendar subscribes",
+  "description": "Almanac: ICS feed agents write; Apple Calendar subscribes",
   "type": "module",
   "engines": {
     "node": ">=24.0.0"

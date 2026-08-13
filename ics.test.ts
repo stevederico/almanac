@@ -44,7 +44,7 @@ describe('renderCalendar', () => {
   it('emits a subscribeable publish calendar', () => {
     const ics = renderCalendar('My Calendar', [
       {
-        uid: 'game-1@my-calendar',
+        uid: 'game-1@almanac',
         summary: 'Rockies @ Giants',
         description: 'NBCS BA',
         location: 'Oracle Park',
@@ -58,7 +58,7 @@ describe('renderCalendar', () => {
     ]);
     assert.match(ics, /^BEGIN:VCALENDAR/);
     assert.match(ics, /X-WR-CALNAME:My Calendar/);
-    assert.match(ics, /UID:game-1@my-calendar/);
+    assert.match(ics, /UID:game-1@almanac/);
     assert.match(ics, /DTSTART:20260816T200500Z/);
     assert.match(ics, /TRANSP:TRANSPARENT/);
     assert.match(ics, /END:VCALENDAR\r\n$/);

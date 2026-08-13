@@ -1,17 +1,17 @@
 #!/bin/zsh
-# my-calendar — local ICS feed. LaunchAgent: com.stevederico.my-calendar
+# almanac — local ICS feed. LaunchAgent: com.stevederico.almanac
 # Runtime lives in ~/.local/share (launchd cannot read Desktop).
-# Usage: my-calendar {start|stop|restart|status|ensure|url|subscribe}
+# Usage: almanac {start|stop|restart|status|ensure|url|subscribe}
 
 set -euo pipefail
 export PATH="/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/bin:/bin:${PATH:-}"
 
-ROOT="${MYCAL_ROOT:-$HOME/Desktop/projects/my-calendar}"
-RUN="${MYCAL_RUN:-$HOME/.local/share/my-calendar}"
-LABEL="com.stevederico.my-calendar"
+ROOT="${ALMANAC_ROOT:-$HOME/Desktop/projects/almanac}"
+RUN="${ALMANAC_RUN:-$HOME/.local/share/almanac}"
+LABEL="com.stevederico.almanac"
 PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
-HOST="${MYCAL_HOST:-localhost}"
-PORT="${MYCAL_PORT:-18788}"
+HOST="${ALMANAC_HOST:-localhost}"
+PORT="${ALMANAC_PORT:-18788}"
 HEALTH="http://localhost:${PORT}/health"
 UID_NUM="$(id -u)"
 
@@ -56,7 +56,7 @@ sync_runtime() {
   cat > "${RUN}/.env" <<EOF
 HOST=localhost
 PORT=${PORT}
-CAL_NAME=My Calendar
+CAL_NAME=Almanac
 DB_PATH=${RUN}/data/calendar.db
 FEED_TOKEN=${FEED_TOKEN:-}
 AGENT_KEY=${AGENT_KEY:-}
@@ -91,9 +91,9 @@ write_plist() {
 	<key>KeepAlive</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>${HOME}/Library/Logs/my-calendar.out</string>
+	<string>${HOME}/Library/Logs/almanac.out</string>
 	<key>StandardErrorPath</key>
-	<string>${HOME}/Library/Logs/my-calendar.err</string>
+	<string>${HOME}/Library/Logs/almanac.err</string>
 </dict>
 </plist>
 EOF
@@ -142,7 +142,7 @@ cmd_start() {
     fi
     sleep 0.15
   done
-  echo "failed to start; see ~/Library/Logs/my-calendar.err" >&2
+  echo "failed to start; see ~/Library/Logs/almanac.err" >&2
   return 1
 }
 
@@ -170,7 +170,7 @@ case "${cmd}" in
   url) cmd_url ;;
   subscribe) cmd_subscribe ;;
   *)
-    echo "usage: my-calendar {start|stop|restart|status|ensure|url|subscribe}" >&2
+    echo "usage: almanac {start|stop|restart|status|ensure|url|subscribe}" >&2
     exit 2
     ;;
 esac

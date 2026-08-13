@@ -1,4 +1,4 @@
-# my-calendar
+# almanac
 
 ICS feed for Apple Calendar. Agents write events over HTTP. Humans only subscribe.
 

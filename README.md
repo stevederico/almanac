@@ -1,4 +1,4 @@
-# my-calendar
+# almanac
 
 an ics feed agents write and apple calendar reads. runs on this mac.
 
@@ -10,8 +10,8 @@ No cloud. No app. Bind is `http://localhost:18788` (v4 + v6). Calendar on this M
 cp .env.example .env
 # set FEED_TOKEN and AGENT_KEY (openssl rand -hex 24)
 bun install
-./bin/my-calendar start
-./bin/my-calendar url
+./bin/almanac start
+./bin/almanac url
 ```
 
 Calendar → File → New Calendar Subscription → paste that URL.
@@ -20,8 +20,8 @@ Calendar → File → New Calendar Subscription → paste that URL.
 
 ### Local feed
 - **Loopback only** — nothing listens on the LAN
-- **LaunchAgent** keeps it up after login (`com.stevederico.my-calendar`)
-- **Runtime copy** in `~/.local/share/my-calendar` (launchd cannot read Desktop)
+- **LaunchAgent** keeps it up after login (`com.stevederico.almanac`)
+- **Runtime copy** in `~/.local/share/almanac` (launchd cannot read Desktop)
 - **Stable UIDs** so edits replace, not duplicate
 
 ### Agent API
@@ -37,11 +37,11 @@ This Mac only. iPhone cannot see `127.0.0.1`. Tailscale later if you want the ph
 
 | Variable | Purpose |
 |---|---|
-| `HOST` | Bind address (default `127.0.0.1`) |
+| `HOST` | Bind address (default `localhost`) |
 | `PORT` | Default `18788` |
 | `FEED_TOKEN` | Secret in the subscribe URL |
 | `AGENT_KEY` | Bearer token for writes |
-| `CAL_NAME` | Title in Calendar |
+| `CAL_NAME` | Title in Calendar (default `Almanac`) |
 | `DB_PATH` | SQLite file |
 
 ## Tech Stack
@@ -62,5 +62,5 @@ agent  --PUT /v1/events/:uid-->  SQLite on disk  --GET /feed/:token.ics-->  Cale
 ## Control
 
 ```bash
-my-calendar start|stop|restart|status|ensure|url
+almanac start|stop|restart|status|ensure|url
 ```

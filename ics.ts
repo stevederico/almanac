@@ -105,7 +105,7 @@ export function renderCalendar(calName: string, events: IcsEvent[]): string {
   const head = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//Steve//my-calendar//EN',
+    'PRODID:-//Steve//almanac//EN',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
     `X-WR-CALNAME:${escapeText(calName)}`,

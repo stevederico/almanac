@@ -1,17 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Template only. `my-calendar start` rewrites ~/Library/LaunchAgents from this shape. -->
+<!-- Template only. `almanac start` rewrites ~/Library/LaunchAgents from this shape. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.stevederico.my-calendar</string>
+	<string>com.stevederico.almanac</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/local/bin/node</string>
-		<string>$HOME/.local/share/my-calendar/server.ts</string>
+		<string>$HOME/.local/share/almanac/server.ts</string>
 	</array>
 	<key>WorkingDirectory</key>
-	<string>$HOME/.local/share/my-calendar</string>
+	<string>$HOME/.local/share/almanac</string>
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>PATH</key>
@@ -24,8 +24,8 @@
 	<key>KeepAlive</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>$HOME/Library/Logs/my-calendar.out</string>
+	<string>$HOME/Library/Logs/almanac.out</string>
 	<key>StandardErrorPath</key>
-	<string>$HOME/Library/Logs/my-calendar.err</string>
+	<string>$HOME/Library/Logs/almanac.err</string>
 </dict>
 </plist>
