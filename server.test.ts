@@ -37,6 +37,7 @@ describe('landing', () => {
     const res = await app.request('/', { headers: { accept: 'text/html' } });
     assert.equal(res.status, 200);
     const html = await res.text();
+    assert.match(html, /An Agent Calendar/);
     assert.match(html, /Send your agent here/);
     assert.match(html, /Create Calendar/);
     assert.match(html, /Copy Prompt/);

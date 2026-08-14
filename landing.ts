@@ -57,7 +57,8 @@ function page(title: string, body: string): string {
     :root { color-scheme: dark; }
     body { font: 16px/1.45 ui-sans-serif, system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1.25rem; color: #e8e8e8; background: #111; }
     .mascot { display: block; width: 176px; height: 176px; margin: 0 0 1.25rem; }
-    h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
+    h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 0.25rem; }
+    .sub { margin: 0 0 1rem; color: #888; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
     pre { background: #1c1c1c; padding: 0.9rem 1rem; overflow-x: auto; }
     a { color: #c8c8c8; }
@@ -96,6 +97,7 @@ export function htmlHome(base: string): string {
   return page('Almanac', `
   <img class="mascot" src="/mascot.webp" width="176" height="176" alt="Almanac jackrabbit clerk">
   <h1>Almanac</h1>
+  <p class="sub">An Agent Calendar</p>
   <p>Send your agent here.</p>
   <form method="post" action="/calendars">
     <button type="submit">Create Calendar</button>
