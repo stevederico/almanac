@@ -116,6 +116,7 @@ export function createApp(opts: AppOptions): Hono {
   });
 
   app.use('/mascot.webp', serveStatic({ root: './public' }));
+  app.use('/og.png', serveStatic({ root: './public' }));
 
   app.get('/health', (c) => c.json({ ok: true }));
 

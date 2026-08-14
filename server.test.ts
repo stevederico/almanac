@@ -44,7 +44,9 @@ describe('landing', () => {
     assert.match(html, /POST .*\/calendars/);
     assert.match(html, /Subscribe from web/);
     assert.match(html, /Do not add events unless I ask/);
-    assert.match(html, /mascot\.webp/);
+    assert.match(html, /og\.png/);
+    assert.match(html, /og:image/);
+    assert.match(html, /twitter:card/);
     assert.doesNotMatch(html, /Create Calendar/);
   });
 });
