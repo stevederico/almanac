@@ -108,8 +108,7 @@ export function htmlHome(base: string): string {
   <img class="mascot" src="/mascot.webp" width="176" height="176" alt="Almanac jackrabbit clerk">
   <h1>Almanac</h1>
   <p class="sub">An Agent Calendar</p>
-  <p>Send your agent here.</p>
-  <p class="muted"><a href="/llms.txt">/llms.txt</a></p>
+  <p>Send your agent here. <a href="/llms.txt">/llms.txt</a></p>
   <pre id="prompt">${esc(prompt)}</pre>
   <button type="button" class="secondary" id="copy">Copy Prompt</button>
   <script>
