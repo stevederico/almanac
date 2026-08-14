@@ -40,11 +40,12 @@ describe('landing', () => {
     assert.match(html, /An Agent Calendar/);
     assert.match(html, /Send your agent here/);
     assert.match(html, /Copy Prompt/);
-    assert.match(html, /llms\.txt and follow it/);
-    assert.match(html, /the write key/);
+    assert.match(html, /GET .*\/llms\.txt/);
+    assert.match(html, /POST .*\/calendars/);
+    assert.match(html, /Subscribe from web/);
+    assert.match(html, /Do not add events unless I ask/);
     assert.match(html, /mascot\.webp/);
     assert.doesNotMatch(html, /Create Calendar/);
-    assert.doesNotMatch(html, /Apple Calendar/);
   });
 });
 

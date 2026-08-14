@@ -13,7 +13,7 @@ export function jsonIndex(base: string): Record<string, unknown> {
   const origin = base.replace(/\/$/, '');
   return {
     name: 'Almanac',
-    description: 'Agent-first calendar. POST /calendars. Subscribe the URL in Apple Calendar.',
+    description: 'Agent-first calendar. POST /calendars. Humans subscribe to the https feed URL.',
     create: `POST ${origin}/calendars`,
     docs: `${origin}/llms.txt`,
   };
@@ -80,14 +80,29 @@ ${body}
 export function htmlHome(base: string): string {
   const origin = base.replace(/\/$/, '');
   const prompt = [
-    `Go to ${origin}/llms.txt and follow it.`,
+    'Almanac is a hosted ICS calendar. You create one over HTTP. I subscribe to the feed in my own calendar app. You write events later when I ask.',
     '',
-    'Create a calendar. Give me:',
-    '- the subscribe URL',
-    '- the calendar id',
-    '- the write key',
+    `1. GET ${origin}/llms.txt and follow it.`,
+    `2. Create a calendar:`,
+    `   POST ${origin}/calendars`,
+    '   Content-Type: application/json',
+    '   Body may be {} or { "name": "optional title" }',
+    '3. The JSON response has:',
+    '   - id',
+    '   - subscribe  (https://…/feed/<token>.ics)',
+    '   - write',
+    '   - key',
+    '4. Store id and key. You need them to add or change events.',
+    '5. Give me those four values in plain text.',
+    '6. Help me subscribe. The feed is HTTPS ICS. Do not use webcal://.',
+    '   Walk me through my calendar of choice:',
+    '   - Apple Calendar: File → New Calendar Subscription → paste subscribe',
+    '   - Google Calendar: Settings → Add calendar → From URL → paste subscribe',
+    '   - Outlook: Add calendar → Subscribe from web → paste subscribe',
+    '   - Anything else that accepts an https .ics URL: paste subscribe there',
+    '7. Do not add events unless I ask. Setup is create + subscribe only.',
     '',
-    'I will subscribe to the https feed URL myself.',
+    `Base: ${origin}`,
   ].join('\n');
   return page('Almanac', `
   <img class="mascot" src="/mascot.webp" width="176" height="176" alt="Almanac jackrabbit clerk">
