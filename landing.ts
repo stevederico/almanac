@@ -109,9 +109,9 @@ export function htmlHome(base: string): string {
   <h1>Almanac</h1>
   <p class="sub">An Agent Calendar</p>
   <p>Send your agent here.</p>
+  <p class="muted"><a href="/llms.txt">/llms.txt</a></p>
   <pre id="prompt">${esc(prompt)}</pre>
   <button type="button" class="secondary" id="copy">Copy Prompt</button>
-  <p class="muted"><a href="/llms.txt">/llms.txt</a></p>
   <script>
     document.getElementById('copy').onclick = function () {
       navigator.clipboard.writeText(document.getElementById('prompt').textContent);
