@@ -74,19 +74,12 @@ ${body}
 `;
 }
 
-export function htmlHome(base: string): string {
-  const origin = base.replace(/\/$/, '');
+export function htmlHome(_base: string): string {
   return page('Almanac', `
   <img class="mascot" src="/mascot.webp" width="176" height="176" alt="Almanac jackrabbit clerk">
   <h1>Almanac</h1>
-  <p>Agent-first calendar. Request a calendar. Subscribe the URL in Apple Calendar. Agents write the events.</p>
-  <p class="muted">Humans: create one below, then Calendar → File → New Calendar Subscription → paste. Use https, not webcal.</p>
-  <form method="post" action="/calendars">
-    <label for="name">Calendar Name</label>
-    <input id="name" name="name" placeholder="Almanac" maxlength="80">
-    <button type="submit">Create Calendar</button>
-  </form>
-  <p class="muted">Agents: <code>POST ${esc(origin)}/calendars</code> then read <a href="/llms.txt">/llms.txt</a>.</p>
+  <p>Send your agent here.</p>
+  <p class="muted"><a href="/llms.txt">/llms.txt</a></p>
 `);
 }
 
