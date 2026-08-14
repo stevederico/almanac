@@ -79,6 +79,11 @@ export function htmlHome(_base: string): string {
   <img class="mascot" src="/mascot.webp" width="176" height="176" alt="Almanac jackrabbit clerk">
   <h1>Almanac</h1>
   <p>Send your agent here.</p>
+  <form method="post" action="/calendars">
+    <label for="name">Calendar Name</label>
+    <input id="name" name="name" placeholder="Almanac" maxlength="80">
+    <button type="submit">Create Calendar</button>
+  </form>
   <p class="muted"><a href="/llms.txt">/llms.txt</a></p>
 `);
 }

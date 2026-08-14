@@ -38,6 +38,7 @@ describe('landing', () => {
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /Send your agent here/);
+    assert.match(html, /Create Calendar/);
     assert.match(html, /mascot\.webp/);
   });
 });
