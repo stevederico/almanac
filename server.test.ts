@@ -39,7 +39,10 @@ describe('landing', () => {
     const html = await res.text();
     assert.match(html, /Send your agent here/);
     assert.match(html, /Create Calendar/);
+    assert.match(html, /Copy Prompt/);
+    assert.match(html, /llms\.txt and follow it/);
     assert.match(html, /mascot\.webp/);
+    assert.doesNotMatch(html, /Calendar Name/);
   });
 });
 

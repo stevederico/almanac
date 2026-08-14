@@ -63,8 +63,10 @@ function page(title: string, body: string): string {
     a { color: #c8c8c8; }
     label { display: block; margin: 1rem 0 0.35rem; font-size: 0.85rem; }
     input { width: 100%; box-sizing: border-box; padding: 0.5rem 0.6rem; background: #1c1c1c; color: inherit; border: 1px solid #333; }
-    button { margin-top: 0.9rem; padding: 0.5rem 0.9rem; background: #e8e8e8; color: #111; border: 0; font-weight: 600; }
+    button { margin-top: 0.9rem; margin-right: 0.5rem; padding: 0.5rem 0.9rem; background: #e8e8e8; color: #111; border: 0; font-weight: 600; }
+    button.secondary { background: #1c1c1c; color: #e8e8e8; border: 1px solid #333; }
     .muted { color: #888; }
+    #prompt { margin-top: 1.5rem; white-space: pre-wrap; }
   </style>
 </head>
 <body>
@@ -74,17 +76,38 @@ ${body}
 `;
 }
 
-export function htmlHome(_base: string): string {
+export function htmlHome(base: string): string {
+  const origin = base.replace(/\/$/, '');
+  const prompt = [
+    `Go to ${origin}/llms.txt and follow it.`,
+    '',
+    'Create a calendar. Give me:',
+    '- the subscribe URL',
+    '- the calendar id',
+    '- the write key',
+    '',
+    'Then add this event with a stable uid:',
+    '- summary: <WHAT>',
+    '- start: <ISO-8601 with timezone, e.g. 2026-08-18T09:00:00-07:00>',
+    '- end: <ISO-8601>',
+    '',
+    'Do not use webcal://. I will subscribe in Apple Calendar with the https feed URL.',
+  ].join('\n');
   return page('Almanac', `
   <img class="mascot" src="/mascot.webp" width="176" height="176" alt="Almanac jackrabbit clerk">
   <h1>Almanac</h1>
   <p>Send your agent here.</p>
   <form method="post" action="/calendars">
-    <label for="name">Calendar Name</label>
-    <input id="name" name="name" placeholder="Almanac" maxlength="80">
     <button type="submit">Create Calendar</button>
   </form>
+  <pre id="prompt">${esc(prompt)}</pre>
+  <button type="button" class="secondary" id="copy">Copy Prompt</button>
   <p class="muted"><a href="/llms.txt">/llms.txt</a></p>
+  <script>
+    document.getElementById('copy').onclick = function () {
+      navigator.clipboard.writeText(document.getElementById('prompt').textContent);
+    };
+  </script>
 `);
 }
 
