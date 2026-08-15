@@ -49,6 +49,13 @@ describe('landing', () => {
     assert.match(html, /twitter:card/);
     assert.doesNotMatch(html, /Create Calendar/);
   });
+
+  it('requires a user-agent in machine docs', async () => {
+    const res = await app.request('/llms.txt');
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /User-Agent/);
+  });
 });
 
 describe('provision', () => {

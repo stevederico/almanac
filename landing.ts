@@ -26,6 +26,8 @@ export function llmsTxt(base: string): string {
     '',
     'Agent-first ICS calendar. Agents write events. Humans subscribe to the feed URL.',
     '',
+    'Every request must send a proper User-Agent header. Empty or default curl is blocked.',
+    '',
     `POST ${origin}/calendars`,
     'Optional JSON body: { "name": "Optional Title" }',
     'Returns id, subscribe URL, write URL, and key. Store the key. It is shown once.',
