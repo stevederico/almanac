@@ -1,0 +1,11 @@
+[package]
+name = "almanac"
+version = "0.1.0"
+edition = "2021"
+description = "Almanac: ICS feed agents write; Apple Calendar subscribes"
+
+# Zero crates. HTTP/JSON/dates are std. SQLite is the system lib.
+
+[profile.release]
+opt-level = 3
+lto = true

@@ -4,7 +4,7 @@
 # Usage: almanac {start|stop|restart|status|ensure|url|subscribe}
 
 set -euo pipefail
-export PATH="/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/bin:/bin:${PATH:-}"
+export PATH="${HOME}/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/bin:/bin:${PATH:-}"
 
 ROOT="${ALMANAC_ROOT:-$HOME/Desktop/projects/almanac}"
 RUN="${ALMANAC_RUN:-$HOME/.local/share/almanac}"
@@ -45,12 +45,12 @@ up() {
 
 sync_runtime() {
   mkdir -p "${RUN}/data"
-  /usr/bin/rsync -a --delete \
-    --exclude '.git/' \
-    --exclude 'data/' \
-    --exclude '.env' \
-    --exclude 'bun.lock' \
-    "${ROOT}/" "${RUN}/"
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "cargo not found; install Rust from https://rustup.rs" >&2
+    return 1
+  fi
+  (cd "${ROOT}" && cargo build --release)
+  /bin/cp "${ROOT}/target/release/almanac" "${RUN}/almanac"
   load_env
   umask 077
   cat > "${RUN}/.env" <<EOF
@@ -74,8 +74,7 @@ write_plist() {
 	<string>${LABEL}</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/local/bin/node</string>
-		<string>${RUN}/server.ts</string>
+		<string>${RUN}/almanac</string>
 	</array>
 	<key>WorkingDirectory</key>
 	<string>${RUN}</string>

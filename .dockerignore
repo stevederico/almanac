@@ -2,6 +2,7 @@
 .env.*
 .git
 node_modules
+target
 data
 *.db
 tls
