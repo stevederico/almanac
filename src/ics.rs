@@ -38,45 +38,7 @@ pub fn fold_line(line: &str) -> String {
     out
 }
 
-/// Instant → `YYYYMMDDTHHMMSSZ`.
-pub fn to_ics_utc(iso: &str) -> Result<String, String> {
-    let dt =
-        chrono::DateTime::parse_from_rfc3339(iso).map_err(|_| format!("invalid date: {iso}"))?;
-    Ok(dt
-        .with_timezone(&chrono::Utc)
-        .format("%Y%m%dT%H%M%SZ")
-        .to_string())
-}
-
-/// Calendar date `YYYY-MM-DD` → `YYYYMMDD`.
-pub fn to_ics_date(ymd: &str) -> Result<String, String> {
-    if ymd.len() != 10
-        || ymd.as_bytes().get(4) != Some(&b'-')
-        || ymd.as_bytes().get(7) != Some(&b'-')
-    {
-        return Err(format!("invalid all-day date: {ymd}"));
-    }
-    let y = &ymd[0..4];
-    let m = &ymd[5..7];
-    let d = &ymd[8..10];
-    if !y.bytes().all(|b| b.is_ascii_digit())
-        || !m.bytes().all(|b| b.is_ascii_digit())
-        || !d.bytes().all(|b| b.is_ascii_digit())
-    {
-        return Err(format!("invalid all-day date: {ymd}"));
-    }
-    Ok(format!("{y}{m}{d}"))
-}
-
-/// Exclusive next DATE for all-day DTEND.
-pub fn next_date(ymd: &str) -> Result<String, String> {
-    let d = chrono::NaiveDate::parse_from_str(ymd, "%Y-%m-%d")
-        .map_err(|_| format!("invalid all-day date: {ymd}"))?;
-    let next = d
-        .succ_opt()
-        .ok_or_else(|| format!("invalid all-day date: {ymd}"))?;
-    Ok(next.format("%Y-%m-%d").to_string())
-}
+pub use crate::time::{next_date, to_ics_date, to_ics_utc};
 
 #[derive(Debug, Clone)]
 pub struct IcsEvent {
@@ -93,10 +55,7 @@ pub struct IcsEvent {
 }
 
 fn stamp(iso: &str) -> String {
-    to_ics_utc(iso).unwrap_or_else(|_| {
-        to_ics_utc(&chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
-            .expect("now is valid")
-    })
+    to_ics_utc(iso).unwrap_or_else(|_| to_ics_utc(&crate::time::now_iso()).expect("now is valid"))
 }
 
 fn vevent(ev: &IcsEvent) -> String {

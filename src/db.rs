@@ -1,10 +1,10 @@
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::{json, Value};
-use uuid::Uuid;
-
 use crate::ics::next_date;
+use crate::json::Value;
+use crate::sqlite::{Bind, Connection};
+use crate::time::{add_hour, is_ymd, now_iso, parse_instant};
+use crate::util::{event_uid, hex_encode, random_bytes, secret};
 
 #[derive(Debug, Clone)]
 pub struct CalendarRow {
@@ -63,7 +63,7 @@ impl Db {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        let conn = Connection::open(path)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS calendars (
                 id TEXT PRIMARY KEY,
@@ -72,32 +72,25 @@ impl Db {
                 name TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );",
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
         migrate_events(&conn)?;
         Ok(Self { conn })
     }
 
     pub fn get_calendar(&self, id: &str) -> Result<Option<CalendarRow>, String> {
-        self.conn
-            .query_row(
-                "SELECT id, feed_token, agent_key, name, created_at FROM calendars WHERE id = ?1",
-                [id],
-                row_calendar,
-            )
-            .optional()
-            .map_err(|e| e.to_string())
+        self.conn.query_row(
+            "SELECT id, feed_token, agent_key, name, created_at FROM calendars WHERE id = ?1",
+            &[Bind::Text(id)],
+            row_calendar,
+        )
     }
 
     pub fn get_calendar_by_feed_token(&self, token: &str) -> Result<Option<CalendarRow>, String> {
-        self.conn
-            .query_row(
-                "SELECT id, feed_token, agent_key, name, created_at FROM calendars WHERE feed_token = ?1",
-                [token],
-                row_calendar,
-            )
-            .optional()
-            .map_err(|e| e.to_string())
+        self.conn.query_row(
+            "SELECT id, feed_token, agent_key, name, created_at FROM calendars WHERE feed_token = ?1",
+            &[Bind::Text(token)],
+            row_calendar,
+        )
     }
 
     pub fn create_calendar(
@@ -117,13 +110,17 @@ impl Db {
         let now = now_iso();
         let feed = feed_token.map(str::to_string).unwrap_or_else(secret);
         let key = agent_key.map(str::to_string).unwrap_or_else(secret);
-        self.conn
-            .execute(
-                "INSERT INTO calendars (id, feed_token, agent_key, name, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, feed, key, name, now],
-            )
-            .map_err(|e| e.to_string())?;
+        self.conn.execute(
+            "INSERT INTO calendars (id, feed_token, agent_key, name, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            &[
+                Bind::Text(id),
+                Bind::Text(&feed),
+                Bind::Text(&key),
+                Bind::Text(name),
+                Bind::Text(&now),
+            ],
+        )?;
         self.get_calendar(id)?
             .ok_or_else(|| "failed to create calendar".into())
     }
@@ -144,39 +141,30 @@ impl Db {
     }
 
     pub fn list_events(&self, calendar_id: &str) -> Result<Vec<EventRow>, String> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT uid, summary, description, location, dtstart, dtend,
-                        all_day, transparent, sequence, created_at, updated_at
-                 FROM events WHERE calendar_id = ?1 ORDER BY dtstart ASC",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([calendar_id], row_event)
-            .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())
+        self.conn.query(
+            "SELECT uid, summary, description, location, dtstart, dtend,
+                    all_day, transparent, sequence, created_at, updated_at
+             FROM events WHERE calendar_id = ?1 ORDER BY dtstart ASC",
+            &[Bind::Text(calendar_id)],
+            row_event,
+        )
     }
 
     pub fn get_event(&self, calendar_id: &str, uid: &str) -> Result<Option<EventRow>, String> {
-        self.conn
-            .query_row(
-                "SELECT uid, summary, description, location, dtstart, dtend,
-                        all_day, transparent, sequence, created_at, updated_at
-                 FROM events WHERE calendar_id = ?1 AND uid = ?2",
-                params![calendar_id, uid],
-                row_event,
-            )
-            .optional()
-            .map_err(|e| e.to_string())
+        self.conn.query_row(
+            "SELECT uid, summary, description, location, dtstart, dtend,
+                    all_day, transparent, sequence, created_at, updated_at
+             FROM events WHERE calendar_id = ?1 AND uid = ?2",
+            &[Bind::Text(calendar_id), Bind::Text(uid)],
+            row_event,
+        )
     }
 
     pub fn upsert_event(&self, calendar_id: &str, input: &EventInput) -> Result<EventRow, String> {
         let all_day = input.all_day == Some(true) || is_ymd(&input.start);
         let times = resolve_times(&input.start, input.end.as_deref(), all_day)?;
         let now = now_iso();
-        let generated = format!("evt-{}", Uuid::new_v4());
+        let generated = event_uid();
         let uid = input.uid.as_deref().unwrap_or(&generated);
         if !is_uid(uid) {
             return Err("uid must be 1-200 chars: letters, digits, . _ @ -".into());
@@ -197,48 +185,44 @@ impl Db {
             .or_else(|| existing.as_ref().map(|e| e.transparent))
             .unwrap_or(true);
         if existing.is_some() {
-            self.conn
-                .execute(
-                    "UPDATE events
-                     SET summary = ?1, description = ?2, location = ?3, dtstart = ?4, dtend = ?5,
-                         all_day = ?6, transparent = ?7, sequence = sequence + 1, updated_at = ?8
-                     WHERE calendar_id = ?9 AND uid = ?10",
-                    params![
-                        input.summary,
-                        description,
-                        location,
-                        times.dtstart,
-                        times.dtend,
-                        times.all_day as i64,
-                        transparent as i64,
-                        now,
-                        calendar_id,
-                        uid,
-                    ],
-                )
-                .map_err(|e| e.to_string())?;
+            self.conn.execute(
+                "UPDATE events
+                 SET summary = ?1, description = ?2, location = ?3, dtstart = ?4, dtend = ?5,
+                     all_day = ?6, transparent = ?7, sequence = sequence + 1, updated_at = ?8
+                 WHERE calendar_id = ?9 AND uid = ?10",
+                &[
+                    Bind::Text(&input.summary),
+                    Bind::Text(&description),
+                    Bind::Text(&location),
+                    Bind::Text(&times.dtstart),
+                    Bind::Text(&times.dtend),
+                    Bind::I64(i64::from(times.all_day)),
+                    Bind::I64(i64::from(transparent)),
+                    Bind::Text(&now),
+                    Bind::Text(calendar_id),
+                    Bind::Text(uid),
+                ],
+            )?;
         } else {
-            self.conn
-                .execute(
-                    "INSERT INTO events (
-                        calendar_id, uid, summary, description, location, dtstart, dtend,
-                        all_day, transparent, sequence, created_at, updated_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11)",
-                    params![
-                        calendar_id,
-                        uid,
-                        input.summary,
-                        description,
-                        location,
-                        times.dtstart,
-                        times.dtend,
-                        times.all_day as i64,
-                        transparent as i64,
-                        now,
-                        now,
-                    ],
-                )
-                .map_err(|e| e.to_string())?;
+            self.conn.execute(
+                "INSERT INTO events (
+                    calendar_id, uid, summary, description, location, dtstart, dtend,
+                    all_day, transparent, sequence, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11)",
+                &[
+                    Bind::Text(calendar_id),
+                    Bind::Text(uid),
+                    Bind::Text(&input.summary),
+                    Bind::Text(&description),
+                    Bind::Text(&location),
+                    Bind::Text(&times.dtstart),
+                    Bind::Text(&times.dtend),
+                    Bind::I64(i64::from(times.all_day)),
+                    Bind::I64(i64::from(transparent)),
+                    Bind::Text(&now),
+                    Bind::Text(&now),
+                ],
+            )?;
         }
         self.get_event(calendar_id, uid)?
             .ok_or_else(|| "failed to save event".into())
@@ -258,71 +242,68 @@ impl Db {
         let end = patch.end.as_deref().unwrap_or(&existing.dtend);
         let times = resolve_times(start, Some(end), all_day)?;
         let now = now_iso();
-        self.conn
-            .execute(
-                "UPDATE events
-                 SET summary = ?1, description = ?2, location = ?3, dtstart = ?4, dtend = ?5,
-                     all_day = ?6, transparent = ?7, sequence = sequence + 1, updated_at = ?8
-                 WHERE calendar_id = ?9 AND uid = ?10",
-                params![
-                    patch.summary.as_deref().unwrap_or(&existing.summary),
-                    patch
-                        .description
-                        .as_deref()
-                        .unwrap_or(&existing.description),
-                    patch.location.as_deref().unwrap_or(&existing.location),
-                    times.dtstart,
-                    times.dtend,
-                    times.all_day as i64,
-                    patch.transparent.unwrap_or(existing.transparent) as i64,
-                    now,
-                    calendar_id,
-                    uid,
-                ],
-            )
-            .map_err(|e| e.to_string())?;
+        let summary = patch.summary.as_deref().unwrap_or(&existing.summary);
+        let description = patch
+            .description
+            .as_deref()
+            .unwrap_or(&existing.description);
+        let location = patch.location.as_deref().unwrap_or(&existing.location);
+        let transparent = patch.transparent.unwrap_or(existing.transparent);
+        self.conn.execute(
+            "UPDATE events
+             SET summary = ?1, description = ?2, location = ?3, dtstart = ?4, dtend = ?5,
+                 all_day = ?6, transparent = ?7, sequence = sequence + 1, updated_at = ?8
+             WHERE calendar_id = ?9 AND uid = ?10",
+            &[
+                Bind::Text(summary),
+                Bind::Text(description),
+                Bind::Text(location),
+                Bind::Text(&times.dtstart),
+                Bind::Text(&times.dtend),
+                Bind::I64(i64::from(times.all_day)),
+                Bind::I64(i64::from(transparent)),
+                Bind::Text(&now),
+                Bind::Text(calendar_id),
+                Bind::Text(uid),
+            ],
+        )?;
         self.get_event(calendar_id, uid)?
             .ok_or_else(|| "failed to save event".into())
     }
 
     pub fn delete_event(&self, calendar_id: &str, uid: &str) -> Result<bool, String> {
-        let n = self
-            .conn
-            .execute(
-                "DELETE FROM events WHERE calendar_id = ?1 AND uid = ?2",
-                params![calendar_id, uid],
-            )
-            .map_err(|e| e.to_string())?;
+        let n = self.conn.execute(
+            "DELETE FROM events WHERE calendar_id = ?1 AND uid = ?2",
+            &[Bind::Text(calendar_id), Bind::Text(uid)],
+        )?;
         Ok(n > 0)
     }
 }
 
-fn row_calendar(row: &rusqlite::Row<'_>) -> rusqlite::Result<CalendarRow> {
-    Ok(CalendarRow {
-        id: row.get(0)?,
-        feed_token: row.get(1)?,
-        agent_key: row.get(2)?,
-        name: row.get(3)?,
-        created_at: row.get(4)?,
-    })
+fn row_calendar(row: &crate::sqlite::Row) -> CalendarRow {
+    CalendarRow {
+        id: row.text(0),
+        feed_token: row.text(1),
+        agent_key: row.text(2),
+        name: row.text(3),
+        created_at: row.text(4),
+    }
 }
 
-fn row_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
-    let all_day: i64 = row.get(6)?;
-    let transparent: i64 = row.get(7)?;
-    Ok(EventRow {
-        uid: row.get(0)?,
-        summary: row.get(1)?,
-        description: row.get(2)?,
-        location: row.get(3)?,
-        dtstart: row.get(4)?,
-        dtend: row.get(5)?,
-        all_day: all_day == 1,
-        transparent: transparent == 1,
-        sequence: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
-    })
+fn row_event(row: &crate::sqlite::Row) -> EventRow {
+    EventRow {
+        uid: row.text(0),
+        summary: row.text(1),
+        description: row.text(2),
+        location: row.text(3),
+        dtstart: row.text(4),
+        dtend: row.text(5),
+        all_day: row.i64(6) == 1,
+        transparent: row.i64(7) == 1,
+        sequence: row.i64(8),
+        created_at: row.text(9),
+        updated_at: row.text(10),
+    }
 }
 
 fn migrate_events(db: &Connection) -> Result<(), String> {
@@ -345,8 +326,7 @@ fn migrate_events(db: &Connection) -> Result<(), String> {
                 PRIMARY KEY (calendar_id, uid)
             );
             CREATE INDEX IF NOT EXISTS idx_events_cal_start ON events(calendar_id, dtstart);",
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
         return Ok(());
     }
     let cols = column_names(db, "events")?;
@@ -380,53 +360,20 @@ fn migrate_events(db: &Connection) -> Result<(), String> {
         ALTER TABLE events_new RENAME TO events;
         CREATE INDEX IF NOT EXISTS idx_events_cal_start ON events(calendar_id, dtstart);",
     )
-    .map_err(|e| e.to_string())
 }
 
 fn table_names(db: &Connection) -> Result<Vec<String>, String> {
-    let mut stmt = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+    db.query(
+        "SELECT name FROM sqlite_master WHERE type = 'table'",
+        &[],
+        |row| row.text(0),
+    )
 }
 
 fn column_names(db: &Connection, table: &str) -> Result<Vec<String>, String> {
-    let mut stmt = db
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
-}
-
-fn secret() -> String {
-    hex_encode(&random_bytes(24))
-}
-
-fn random_bytes(n: usize) -> Vec<u8> {
-    let mut buf = vec![0u8; n];
-    getrandom::getrandom(&mut buf).expect("rng");
-    buf
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
-}
-
-fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    db.query(&format!("PRAGMA table_info({table})"), &[], |row| {
+        row.text(1)
+    })
 }
 
 fn is_uid(value: &str) -> bool {
@@ -435,33 +382,6 @@ fn is_uid(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'@' | b'-'))
-}
-
-fn is_ymd(value: &str) -> bool {
-    value.len() == 10
-        && value.as_bytes()[4] == b'-'
-        && value.as_bytes()[7] == b'-'
-        && value.bytes().enumerate().all(|(i, b)| {
-            if i == 4 || i == 7 {
-                b == b'-'
-            } else {
-                b.is_ascii_digit()
-            }
-        })
-}
-
-fn parse_instant(value: &str) -> Option<String> {
-    chrono::DateTime::parse_from_rfc3339(value).ok().map(|d| {
-        d.with_timezone(&chrono::Utc)
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-    })
-}
-
-fn add_hour(iso: &str) -> String {
-    let dt = chrono::DateTime::parse_from_rfc3339(iso)
-        .expect("stored instant")
-        .with_timezone(&chrono::Utc);
-    (dt + chrono::Duration::hours(1)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 struct Times {
@@ -605,38 +525,46 @@ pub fn parse_event_patch(body: &Value) -> Result<EventPatch, String> {
 
 pub fn json_calendar(row: &CalendarRow, base: &str) -> Value {
     let origin = base.trim_end_matches('/');
-    json!({
-        "id": row.id,
-        "name": row.name,
-        "subscribe": format!("{origin}/feed/{}.ics", row.feed_token),
-        "write": format!("{origin}/v1/c/{}/events", row.id),
-        "key": row.agent_key,
-        "createdAt": row.created_at,
-    })
+    Value::object(&[
+        ("id", Value::String(row.id.clone())),
+        ("name", Value::String(row.name.clone())),
+        (
+            "subscribe",
+            Value::String(format!("{origin}/feed/{}.ics", row.feed_token)),
+        ),
+        (
+            "write",
+            Value::String(format!("{origin}/v1/c/{}/events", row.id)),
+        ),
+        ("key", Value::String(row.agent_key.clone())),
+        ("createdAt", Value::String(row.created_at.clone())),
+    ])
 }
 
 pub fn json_event(row: &EventRow) -> Value {
-    json!({
-        "uid": row.uid,
-        "summary": row.summary,
-        "description": row.description,
-        "location": row.location,
-        "start": row.dtstart,
-        "end": row.dtend,
-        "allDay": row.all_day,
-        "transparent": row.transparent,
-        "sequence": row.sequence,
-        "createdAt": row.created_at,
-        "updatedAt": row.updated_at,
-    })
+    Value::object(&[
+        ("uid", Value::String(row.uid.clone())),
+        ("summary", Value::String(row.summary.clone())),
+        ("description", Value::String(row.description.clone())),
+        ("location", Value::String(row.location.clone())),
+        ("start", Value::String(row.dtstart.clone())),
+        ("end", Value::String(row.dtend.clone())),
+        ("allDay", Value::Bool(row.all_day)),
+        ("transparent", Value::Bool(row.transparent)),
+        ("sequence", Value::Number(row.sequence)),
+        ("createdAt", Value::String(row.created_at.clone())),
+        ("updatedAt", Value::String(row.updated_at.clone())),
+    ])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json::parse;
+    use crate::util::hex_encode;
 
     fn tmp_db() -> (Db, String) {
-        let dir = std::env::temp_dir().join(format!("almanac-db-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("almanac-db-{}", hex_encode(&random_bytes(8))));
         std::fs::create_dir_all(&dir).unwrap();
         let db = Db::open(dir.join("calendar.db")).unwrap();
         let cal = db.create_calendar(Some("Test"), None, None, None).unwrap();
@@ -645,23 +573,20 @@ mod tests {
 
     #[test]
     fn requires_summary_and_start() {
-        let miss = parse_event_input(&json!({ "summary": "x" }));
+        let miss = parse_event_input(&parse(r#"{"summary":"x"}"#).unwrap());
         assert!(miss.is_err());
-        let ok = parse_event_input(&json!({
-            "summary": "Dinner",
-            "start": "2026-08-16T19:00:00-07:00"
-        }))
+        let ok = parse_event_input(
+            &parse(r#"{"summary":"Dinner","start":"2026-08-16T19:00:00-07:00"}"#).unwrap(),
+        )
         .unwrap();
         assert_eq!(ok.summary, "Dinner");
     }
 
     #[test]
     fn rejects_a_bad_uid() {
-        let bad = parse_event_input(&json!({
-            "uid": "has spaces",
-            "summary": "x",
-            "start": "2026-08-16T19:00:00Z"
-        }));
+        let bad = parse_event_input(
+            &parse(r#"{"uid":"has spaces","summary":"x","start":"2026-08-16T19:00:00Z"}"#).unwrap(),
+        );
         assert!(bad.is_err());
     }
 

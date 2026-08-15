@@ -1,6 +1,5 @@
-use serde_json::{json, Value};
-
 use crate::db::{json_calendar, CalendarRow};
+use crate::json::Value;
 
 fn esc(value: &str) -> String {
     value
@@ -12,12 +11,18 @@ fn esc(value: &str) -> String {
 
 pub fn json_index(base: &str) -> Value {
     let origin = base.trim_end_matches('/');
-    json!({
-        "name": "Almanac",
-        "description": "Agent-first calendar. POST /calendars. Humans subscribe to the https feed URL.",
-        "create": format!("POST {origin}/calendars"),
-        "docs": format!("{origin}/llms.txt"),
-    })
+    Value::object(&[
+        ("name", Value::String("Almanac".into())),
+        (
+            "description",
+            Value::String(
+                "Agent-first calendar. POST /calendars. Humans subscribe to the https feed URL."
+                    .into(),
+            ),
+        ),
+        ("create", Value::String(format!("POST {origin}/calendars"))),
+        ("docs", Value::String(format!("{origin}/llms.txt"))),
+    ])
 }
 
 pub fn llms_txt(base: &str) -> String {
@@ -165,9 +170,15 @@ pub fn html_home(base: &str) -> String {
 
 pub fn html_created(row: &CalendarRow, base: &str) -> String {
     let creds = json_calendar(row, base);
-    let subscribe = creds["subscribe"].as_str().unwrap_or_default();
-    let key = creds["key"].as_str().unwrap_or_default();
-    let write = creds["write"].as_str().unwrap_or_default();
+    let subscribe = creds
+        .get("subscribe")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let key = creds.get("key").and_then(Value::as_str).unwrap_or_default();
+    let write = creds
+        .get("write")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     page(
         "Almanac Calendar",
         &format!(

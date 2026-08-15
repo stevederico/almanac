@@ -47,9 +47,8 @@ This Mac only. iPhone cannot see `127.0.0.1`. Tailscale later if you want the ph
 
 | Technology | Version | Purpose |
 |---|---|---|
-| **Rust** | 2021 | Runtime |
-| **axum** | 0.8 | HTTP |
-| **rusqlite** | 0.32 | Event store |
+| **Rust** | 2021 | Runtime. Zero crates. |
+| **SQLite** | system | Event store (`libsqlite3`) |
 | **launchd** | macOS | KeepAlive on login |
 
 ## Architecture

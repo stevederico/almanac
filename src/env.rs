@@ -168,7 +168,10 @@ mod tests {
     #[test]
     fn load_env_file_cases() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let dir = std::env::temp_dir().join(format!("almanac-env-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!(
+            "almanac-env-{}",
+            crate::util::hex_encode(&crate::util::random_bytes(8))
+        ));
         fs::create_dir_all(&dir).unwrap();
 
         let path = dir.join(".env");

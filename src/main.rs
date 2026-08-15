@@ -1,14 +1,17 @@
-use std::net::SocketAddr;
+use std::io::{BufReader, BufWriter};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 use almanac::db::Db;
 use almanac::env::{load_env_file, read_config_from_os};
-use almanac::server::{app, AppState};
-use tokio::net::TcpListener;
+use almanac::http::{read_request, write_response};
+use almanac::json::{stringify, Value};
+use almanac::server::{handle, AppState};
+use almanac::time::now_iso;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let env_path = Path::new(".env");
     if let Err(e) = load_env_file(env_path) {
         eprintln!("{e}");
@@ -31,36 +34,60 @@ async fn main() {
         db: Arc::new(Mutex::new(db)),
         public_base,
     };
-    let router = app(state);
     let binds = listen_hosts(&cfg.host);
-    let mut set = tokio::task::JoinSet::new();
+    let mut listeners = Vec::new();
     for host in &binds {
         let addr = parse_bind(host, cfg.port).unwrap_or_else(|| {
             eprintln!("bad bind {host}:{}", cfg.port);
             std::process::exit(1);
         });
-        let listener = TcpListener::bind(addr).await.unwrap_or_else(|e| {
+        let listener = TcpListener::bind(addr).unwrap_or_else(|e| {
             eprintln!("listen {addr}: {e}");
             std::process::exit(1);
         });
-        let router = router.clone();
-        set.spawn(async move { axum::serve(listener, router).await });
+        listeners.push(listener);
     }
     println!(
         "{}",
-        serde_json::json!({
-            "t": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            "msg": "listen",
-            "host": cfg.host,
-            "binds": binds,
-            "port": cfg.port,
-            "scheme": "http",
-        })
+        stringify(&Value::object(&[
+            ("t", Value::String(now_iso())),
+            ("msg", Value::String("listen".into())),
+            ("host", Value::String(cfg.host.clone())),
+            (
+                "binds",
+                Value::Array(binds.iter().cloned().map(Value::String).collect()),
+            ),
+            ("port", Value::Number(i64::from(cfg.port))),
+            ("scheme", Value::String("http".into())),
+        ]))
     );
-    if let Some(Ok(Err(e))) = set.join_next().await {
-        eprintln!("server: {e}");
-        std::process::exit(1);
+    let mut joins = Vec::new();
+    for listener in listeners {
+        let state = state.clone();
+        joins.push(thread::spawn(move || accept_loop(listener, state)));
     }
+    for join in joins {
+        let _ = join.join();
+    }
+}
+
+fn accept_loop(listener: TcpListener, state: AppState) {
+    for stream in listener.incoming() {
+        let Ok(stream) = stream else { continue };
+        let state = state.clone();
+        thread::spawn(move || serve(stream, &state));
+    }
+}
+
+fn serve(stream: TcpStream, state: &AppState) {
+    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+    let req = match read_request(&mut reader) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let res = handle(state, &req);
+    let mut writer = BufWriter::new(stream);
+    let _ = write_response(&mut writer, &res);
 }
 
 /// Loopback hostnames must listen on v4 and v6. `localhost` prefers ::1.
