@@ -9,7 +9,6 @@ Prod: `https://almanac.dottie.ai`. Local: `http://localhost:18788`. Do not use `
 ```bash
 cp .env.example .env
 # set FEED_TOKEN and AGENT_KEY (openssl rand -hex 24)
-bun install
 ./bin/almanac start
 ./bin/almanac url
 ```
@@ -48,9 +47,9 @@ This Mac only. iPhone cannot see `127.0.0.1`. Tailscale later if you want the ph
 
 | Technology | Version | Purpose |
 |---|---|---|
-| **Node** | 24+ | Runtime (`node:sqlite`, native TypeScript) |
-| **Hono** | 4.7 | HTTP |
-| **SQLite** | builtin | Event store |
+| **Rust** | 2021 | Runtime |
+| **axum** | 0.8 | HTTP |
+| **rusqlite** | 0.32 | Event store |
 | **launchd** | macOS | KeepAlive on login |
 
 ## Architecture

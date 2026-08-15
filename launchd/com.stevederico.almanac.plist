@@ -7,8 +7,7 @@
 	<string>com.stevederico.almanac</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/local/bin/node</string>
-		<string>$HOME/.local/share/almanac/server.ts</string>
+		<string>$HOME/.local/share/almanac/almanac</string>
 	</array>
 	<key>WorkingDirectory</key>
 	<string>$HOME/.local/share/almanac</string>
