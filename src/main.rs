@@ -1,8 +1,10 @@
 use std::io::{BufReader, BufWriter};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use almanac::db::Db;
 use almanac::env::{load_env_file, read_config_from_os};
@@ -71,19 +73,87 @@ fn main() {
     }
 }
 
+/// Give up on a client that has not finished its request headers.
+///
+/// Every response sends `connection: close` and one request is served per
+/// connection, so no legitimate client holds a socket open waiting. Without a
+/// deadline a client sending one byte a minute never trips the byte caps in
+/// `read_request` and pins its thread forever.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Give up on a client that will not accept its response.
+///
+/// Generous compared to the read side: an ICS feed can be large and the client
+/// on a slow mobile link.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Refuse new connections past this many in flight.
+///
+/// One thread per connection, so this bounds thread and fd use under a flood.
+/// Roomy for a personal calendar sitting behind a proxy.
+const MAX_CONNECTIONS: usize = 512;
+
+/// Decrements the live-connection count when a worker finishes.
+///
+/// A guard rather than a bare decrement so the slot is released on panic too --
+/// `read_request` and `handle` both run inside the worker.
+struct ConnectionGuard(Arc<AtomicUsize>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn accept_loop(listener: TcpListener, state: AppState) {
+    let live = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
+
+        // Reserve the slot before spawning, so a burst cannot overshoot.
+        let taken = live.fetch_add(1, Ordering::SeqCst) + 1;
+        if taken > MAX_CONNECTIONS {
+            live.fetch_sub(1, Ordering::SeqCst);
+            eprintln!("almanac: refusing connection, {MAX_CONNECTIONS} already in flight");
+            drop(stream);
+            continue;
+        }
+
+        let guard = ConnectionGuard(live.clone());
         let state = state.clone();
-        thread::spawn(move || serve(stream, &state));
+        thread::spawn(move || {
+            let _guard = guard;
+            serve(stream, &state);
+        });
     }
 }
 
 fn serve(stream: TcpStream, state: &AppState) {
-    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+    if let Err(e) = stream.set_read_timeout(Some(READ_TIMEOUT)) {
+        eprintln!("almanac: set_read_timeout failed: {e}");
+        return;
+    }
+    if let Err(e) = stream.set_write_timeout(Some(WRITE_TIMEOUT)) {
+        eprintln!("almanac: set_write_timeout failed: {e}");
+        return;
+    }
+
+    // Was `.expect("clone")`, which panicked the worker on fd exhaustion --
+    // exactly the state a connection flood reaches.
+    let Ok(read_half) = stream.try_clone() else {
+        eprintln!("almanac: could not clone stream, dropping connection");
+        return;
+    };
+
+    let mut reader = BufReader::new(read_half);
     let req = match read_request(&mut reader) {
         Ok(r) => r,
-        Err(_) => return,
+        Err(e) => {
+            // Nothing logged this before: a stalled connection produced no
+            // output at all, so a flood looked like a silent, idle server.
+            eprintln!("almanac: dropping connection: {e}");
+            return;
+        }
     };
     let res = handle(state, &req);
     let mut writer = BufWriter::new(stream);
