@@ -42,11 +42,6 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
             200,
             &stringify(&Value::object(&[("ok", Value::Bool(true))])),
         ),
-        ("GET", "/robots.txt") => text_response(
-            200,
-            "text/plain; charset=utf-8",
-            "User-agent: *\nDisallow: /\n",
-        ),
         ("GET", "/llms.txt") => {
             let base = request_base(req, &state.public_base);
             text_response(200, "text/plain; charset=utf-8", llms_txt(&base))
