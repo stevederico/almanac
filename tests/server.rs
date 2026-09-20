@@ -247,3 +247,192 @@ fn upserts_by_uid_via_put() {
     let v = parse(std::str::from_utf8(&body).unwrap()).unwrap();
     assert_eq!(v.get("sequence"), Some(&Value::Number(1)));
 }
+
+#[test]
+fn writes_a_series_with_exceptions_on_both_url_trees() {
+    let app = test_app();
+    let (_, created_body, _) = send(
+        &app,
+        Request::new("POST", "/calendars")
+            .with_header("content-type", "application/json")
+            .with_header("accept", "application/json")
+            .with_body(b"{}".to_vec()),
+    );
+    let created = parse(std::str::from_utf8(&created_body).unwrap()).unwrap();
+    let id = created.get("id").and_then(Value::as_str).unwrap();
+    let key = created.get("key").and_then(Value::as_str).unwrap();
+    let sub = created
+        .get("subscribe")
+        .and_then(Value::as_str)
+        .unwrap()
+        .strip_prefix(BASE)
+        .unwrap();
+
+    let series = br#"{"summary":"Standup","start":"2026-09-22T09:00:00-07:00","end":"2026-09-22T09:15:00-07:00","timeZone":"America/Los_Angeles","rrule":"FREQ=WEEKLY;BYDAY=TU"}"#;
+    let (status, body, _) = send(
+        &app,
+        Request::new("PUT", &format!("/v1/c/{id}/events/standup"))
+            .with_header("authorization", &format!("Bearer {key}"))
+            .with_header("content-type", "application/json")
+            .with_body(series.to_vec()),
+    );
+    assert_eq!(status, 201);
+    let saved = parse(std::str::from_utf8(&body).unwrap()).unwrap();
+    assert_eq!(
+        saved.get("rrule").and_then(Value::as_str),
+        Some("FREQ=WEEKLY;BYDAY=TU")
+    );
+    assert_eq!(
+        saved.get("start").and_then(Value::as_str),
+        Some("2026-09-22T09:00:00")
+    );
+    assert_eq!(
+        saved.get("timeZone").and_then(Value::as_str),
+        Some("America/Los_Angeles")
+    );
+
+    let (missing_tz, _, _) = send(
+        &app,
+        Request::new("PUT", &format!("/v1/c/{id}/events/no-zone"))
+            .with_header("authorization", &format!("Bearer {key}"))
+            .with_header("content-type", "application/json")
+            .with_body(
+                br#"{"summary":"Nope","start":"2026-09-22T09:00:00-07:00","rrule":"FREQ=DAILY"}"#
+                    .to_vec(),
+            ),
+    );
+    assert_eq!(missing_tz, 400);
+
+    let (bad_zone, _, _) = send(
+        &app,
+        Request::new("PUT", &format!("/v1/c/{id}/events/bad-zone"))
+            .with_header("authorization", &format!("Bearer {key}"))
+            .with_header("content-type", "application/json")
+            .with_body(
+                br#"{"summary":"Nope","start":"2026-09-22T09:00:00-07:00","timeZone":"Mars/Base","rrule":"FREQ=DAILY"}"#
+                    .to_vec(),
+            ),
+    );
+    assert_eq!(bad_zone, 400);
+
+    let (ex_status, ex_body, _) = send(
+        &app,
+        Request::new("PUT", &format!("/v1/c/{id}/events/standup/exdates"))
+            .with_header("authorization", &format!("Bearer {key}"))
+            .with_header("content-type", "application/json")
+            .with_body(br#"{"recurrenceId":"2026-10-06T09:00:00"}"#.to_vec()),
+    );
+    assert_eq!(ex_status, 201);
+    let skipped = parse(std::str::from_utf8(&ex_body).unwrap()).unwrap();
+    assert_eq!(
+        skipped
+            .get("exdates")
+            .and_then(Value::as_array)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let (over_status, over_body, _) = send(
+        &app,
+        Request::new("PUT", &format!("/v1/c/{id}/events/standup/overrides"))
+            .with_header("authorization", &format!("Bearer {key}"))
+            .with_header("content-type", "application/json")
+            .with_body(
+                br#"{"recurrenceId":"2026-10-13T09:00:00","summary":"Standup late","start":"2026-10-13T10:00:00","end":"2026-10-13T10:15:00"}"#
+                    .to_vec(),
+            ),
+    );
+    assert_eq!(over_status, 201);
+    let moved = parse(std::str::from_utf8(&over_body).unwrap()).unwrap();
+    assert_eq!(
+        moved
+            .get("overrides")
+            .and_then(Value::as_array)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let (got_status, got_body, _) = send(
+        &app,
+        Request::new("GET", &format!("/v1/c/{id}/events/standup"))
+            .with_header("authorization", &format!("Bearer {key}")),
+    );
+    assert_eq!(got_status, 200);
+    let got = parse(std::str::from_utf8(&got_body).unwrap()).unwrap();
+    assert!(got.get("exdates").and_then(Value::as_array).is_some());
+    assert!(got.get("overrides").and_then(Value::as_array).is_some());
+
+    let (blocked, _, _) = send(
+        &app,
+        Request::new("PATCH", &format!("/v1/c/{id}/events/standup"))
+            .with_header("authorization", &format!("Bearer {key}"))
+            .with_header("content-type", "application/json")
+            .with_body(br#"{"rrule":""}"#.to_vec()),
+    );
+    assert_eq!(blocked, 400);
+
+    let (feed_status, feed_body, _) = send(&app, Request::new("GET", sub));
+    assert_eq!(feed_status, 200);
+    let feed = String::from_utf8(feed_body).unwrap();
+    assert!(feed.contains("BEGIN:VTIMEZONE"));
+    assert!(feed.contains("TZID:America/Los_Angeles"));
+    assert!(feed.contains("RRULE:FREQ=WEEKLY;BYDAY=TU"));
+    assert!(feed.contains("EXDATE;TZID=America/Los_Angeles:20261006T090000"));
+    assert!(feed.contains("RECURRENCE-ID;TZID=America/Los_Angeles:20261013T090000"));
+    assert!(feed.contains("DTSTART;TZID=America/Los_Angeles:20260922T090000"));
+
+    let (gone_ex, _, _) = send(
+        &app,
+        Request::new("DELETE", &format!("/v1/c/{id}/events/standup/exdates"))
+            .with_header("authorization", &format!("Bearer {key}"))
+            .with_header("content-type", "application/json")
+            .with_body(br#"{"recurrenceId":"2026-10-06T09:00:00"}"#.to_vec()),
+    );
+    assert_eq!(gone_ex, 204);
+    let (gone_over, _, _) = send(
+        &app,
+        Request::new("DELETE", &format!("/v1/c/{id}/events/standup/overrides"))
+            .with_header("authorization", &format!("Bearer {key}"))
+            .with_header("content-type", "application/json")
+            .with_body(br#"{"recurrenceId":"2026-10-13T09:00:00"}"#.to_vec()),
+    );
+    assert_eq!(gone_over, 204);
+
+    let (home_status, _, _) = send(
+        &app,
+        Request::new("PUT", "/v1/events/home-standup")
+            .with_header("authorization", &format!("Bearer {KEY}"))
+            .with_header("content-type", "application/json")
+            .with_body(series.to_vec()),
+    );
+    assert_eq!(home_status, 201);
+    let (home_ex, _, _) = send(
+        &app,
+        Request::new("PUT", "/v1/events/home-standup/exdates")
+            .with_header("authorization", &format!("Bearer {KEY}"))
+            .with_header("content-type", "application/json")
+            .with_body(br#"{"recurrenceId":"2026-10-06T09:00:00"}"#.to_vec()),
+    );
+    assert_eq!(home_ex, 201);
+
+    let (one_off, one_body, _) = send(
+        &app,
+        Request::new("PUT", "/v1/events/once")
+            .with_header("authorization", &format!("Bearer {KEY}"))
+            .with_header("content-type", "application/json")
+            .with_body(br#"{"summary":"Once","start":"2026-08-16T13:05:00-07:00"}"#.to_vec()),
+    );
+    assert_eq!(one_off, 201);
+    let once = parse(std::str::from_utf8(&one_body).unwrap()).unwrap();
+    assert!(once.get("rrule").is_none());
+
+    let (_, home_feed, _) = send(&app, Request::new("GET", &format!("/feed/{FEED}.ics")));
+    let home_feed = String::from_utf8(home_feed).unwrap();
+    assert!(home_feed.contains("DTSTART:20260816T200500Z"));
+    assert!(home_feed.contains("UID:once"));
+    let once_at = home_feed.find("UID:once").unwrap();
+    let once_end = home_feed[once_at..].find("END:VEVENT").unwrap();
+    assert!(!home_feed[once_at..once_at + once_end].contains("RRULE:"));
+}

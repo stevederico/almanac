@@ -41,8 +41,8 @@ pub fn fold_line(line: &str) -> String {
 pub use crate::time::{next_date, to_ics_date, to_ics_utc};
 
 #[derive(Debug, Clone)]
-pub struct IcsEvent {
-    pub uid: String,
+pub struct IcsOverride {
+    pub recurrence_id: String,
     pub summary: String,
     pub description: String,
     pub location: String,
@@ -54,46 +54,138 @@ pub struct IcsEvent {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct IcsEvent {
+    pub uid: String,
+    pub summary: String,
+    pub description: String,
+    pub location: String,
+    pub dtstart: String,
+    pub dtend: String,
+    pub all_day: bool,
+    pub transparent: bool,
+    pub sequence: i64,
+    pub updated_at: String,
+    pub rrule: String,
+    pub tzid: String,
+    pub exdates: Vec<String>,
+    pub overrides: Vec<IcsOverride>,
+}
+
 fn stamp(iso: &str) -> String {
     to_ics_utc(iso).unwrap_or_else(|_| to_ics_utc(&crate::time::now_iso()).expect("now is valid"))
 }
 
-fn vevent(ev: &IcsEvent) -> String {
+fn compact_wall(value: &str) -> String {
+    let (date, time) = value.split_once('T').unwrap_or((value, ""));
+    let date: String = date.chars().filter(|c| c.is_ascii_digit()).collect();
+    let time: String = time
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .take(6)
+        .collect();
+    if time.is_empty() {
+        date
+    } else {
+        format!("{date}T{time}")
+    }
+}
+
+fn ics_when(name: &str, value: &str, all_day: bool, tzid: &str) -> String {
+    if all_day {
+        return format!(
+            "{name};VALUE=DATE:{}",
+            to_ics_date(value).unwrap_or_default()
+        );
+    }
+    if tzid.is_empty() || tzid == "UTC" {
+        format!("{name}:{}Z", compact_wall(value))
+    } else {
+        format!("{name};TZID={tzid}:{}", compact_wall(value))
+    }
+}
+
+fn vevent_lines(
+    uid: &str,
+    summary: &str,
+    description: &str,
+    location: &str,
+    dtstart: &str,
+    dtend: &str,
+    all_day: bool,
+    transparent: bool,
+    sequence: i64,
+    updated_at: &str,
+    tzid: &str,
+    recurrence_id: Option<&str>,
+    rrule: &str,
+    exdates: &[String],
+) -> Vec<String> {
+    let recurring = !rrule.is_empty() || recurrence_id.is_some();
+    let zone = if recurring { tzid } else { "" };
     let mut lines = vec![
         "BEGIN:VEVENT".to_string(),
-        format!("UID:{}", ev.uid),
-        format!("DTSTAMP:{}", stamp(&ev.updated_at)),
-        format!("LAST-MODIFIED:{}", stamp(&ev.updated_at)),
-        format!("SEQUENCE:{}", ev.sequence),
-        format!("SUMMARY:{}", escape_text(&ev.summary)),
+        format!("UID:{uid}"),
+        format!("DTSTAMP:{}", stamp(updated_at)),
+        format!("LAST-MODIFIED:{}", stamp(updated_at)),
+        format!("SEQUENCE:{sequence}"),
+        format!("SUMMARY:{}", escape_text(summary)),
     ];
-    if ev.all_day {
+    if let Some(rid) = recurrence_id {
+        lines.push(ics_when("RECURRENCE-ID", rid, all_day, zone));
+    }
+    if recurring {
+        lines.push(ics_when("DTSTART", dtstart, all_day, zone));
+        lines.push(ics_when("DTEND", dtend, all_day, zone));
+    } else if all_day {
         lines.push(format!(
             "DTSTART;VALUE=DATE:{}",
-            to_ics_date(&ev.dtstart).unwrap_or_default()
+            to_ics_date(dtstart).unwrap_or_default()
         ));
         lines.push(format!(
             "DTEND;VALUE=DATE:{}",
-            to_ics_date(&ev.dtend).unwrap_or_default()
+            to_ics_date(dtend).unwrap_or_default()
         ));
     } else {
         lines.push(format!(
             "DTSTART:{}",
-            to_ics_utc(&ev.dtstart).unwrap_or_default()
+            to_ics_utc(dtstart).unwrap_or_default()
         ));
-        lines.push(format!(
-            "DTEND:{}",
-            to_ics_utc(&ev.dtend).unwrap_or_default()
-        ));
+        lines.push(format!("DTEND:{}", to_ics_utc(dtend).unwrap_or_default()));
     }
-    if !ev.location.is_empty() {
-        lines.push(format!("LOCATION:{}", escape_text(&ev.location)));
+    if !rrule.is_empty() {
+        lines.push(format!("RRULE:{rrule}"));
     }
-    if !ev.description.is_empty() {
-        lines.push(format!("DESCRIPTION:{}", escape_text(&ev.description)));
+    if !exdates.is_empty() {
+        let dates = exdates
+            .iter()
+            .map(|d| {
+                if all_day {
+                    to_ics_date(d).unwrap_or_default()
+                } else if zone.is_empty() || zone == "UTC" {
+                    format!("{}Z", compact_wall(d))
+                } else {
+                    compact_wall(d)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        if all_day {
+            lines.push(format!("EXDATE;VALUE=DATE:{dates}"));
+        } else if zone.is_empty() || zone == "UTC" {
+            lines.push(format!("EXDATE:{dates}"));
+        } else {
+            lines.push(format!("EXDATE;TZID={zone}:{dates}"));
+        }
+    }
+    if !location.is_empty() {
+        lines.push(format!("LOCATION:{}", escape_text(location)));
+    }
+    if !description.is_empty() {
+        lines.push(format!("DESCRIPTION:{}", escape_text(description)));
     }
     lines.push(
-        if ev.transparent {
+        if transparent {
             "TRANSP:TRANSPARENT"
         } else {
             "TRANSP:OPAQUE"
@@ -101,6 +193,44 @@ fn vevent(ev: &IcsEvent) -> String {
         .to_string(),
     );
     lines.push("END:VEVENT".to_string());
+    lines
+}
+
+fn vevent(ev: &IcsEvent) -> String {
+    let mut lines = vevent_lines(
+        &ev.uid,
+        &ev.summary,
+        &ev.description,
+        &ev.location,
+        &ev.dtstart,
+        &ev.dtend,
+        ev.all_day,
+        ev.transparent,
+        ev.sequence,
+        &ev.updated_at,
+        &ev.tzid,
+        None,
+        &ev.rrule,
+        &ev.exdates,
+    );
+    for over in &ev.overrides {
+        lines.extend(vevent_lines(
+            &ev.uid,
+            &over.summary,
+            &over.description,
+            &over.location,
+            &over.dtstart,
+            &over.dtend,
+            over.all_day,
+            over.transparent,
+            over.sequence,
+            &over.updated_at,
+            &ev.tzid,
+            Some(&over.recurrence_id),
+            "",
+            &[],
+        ));
+    }
     lines
         .into_iter()
         .map(|l| fold_line(&l))
@@ -122,6 +252,17 @@ pub fn render_calendar(cal_name: &str, events: &[IcsEvent]) -> String {
     .into_iter()
     .map(fold_line)
     .collect();
+    let mut zones: Vec<&str> = Vec::new();
+    for ev in events {
+        if !ev.rrule.is_empty() && !ev.tzid.is_empty() && !zones.contains(&ev.tzid.as_str()) {
+            zones.push(ev.tzid.as_str());
+        }
+    }
+    for zone in zones {
+        if let Some(block) = crate::tz::vtimezone_lines(zone) {
+            lines.extend(block.iter().copied().map(fold_line));
+        }
+    }
     lines.extend(events.iter().map(vevent));
     lines.push("END:VCALENDAR".into());
     format!("{}\r\n", lines.join("\r\n"))
@@ -179,6 +320,10 @@ mod tests {
                 transparent: true,
                 sequence: 0,
                 updated_at: "2026-08-13T17:00:00.000Z".into(),
+                rrule: String::new(),
+                tzid: String::new(),
+                exdates: Vec::new(),
+                overrides: Vec::new(),
             }],
         );
         assert!(ics.starts_with("BEGIN:VCALENDAR"));
@@ -204,9 +349,86 @@ mod tests {
                 transparent: true,
                 sequence: 1,
                 updated_at: "2026-08-13T17:00:00.000Z".into(),
+                rrule: String::new(),
+                tzid: String::new(),
+                exdates: Vec::new(),
+                overrides: Vec::new(),
             }],
         );
         assert!(ics.contains("DTSTART;VALUE=DATE:20260820"));
         assert!(ics.contains("DTEND;VALUE=DATE:20260821"));
+        assert!(!ics.contains("RRULE:"));
+    }
+
+    #[test]
+    fn emits_rrule_timezone_exdate_and_override() {
+        let ics = render_calendar(
+            "My Calendar",
+            &[IcsEvent {
+                uid: "standup".into(),
+                summary: "Standup".into(),
+                description: String::new(),
+                location: String::new(),
+                dtstart: "2026-09-22T09:00:00".into(),
+                dtend: "2026-09-22T09:15:00".into(),
+                all_day: false,
+                transparent: true,
+                sequence: 2,
+                updated_at: "2026-09-01T17:00:00.000Z".into(),
+                rrule: "FREQ=WEEKLY;BYDAY=TU".into(),
+                tzid: "America/Los_Angeles".into(),
+                exdates: vec!["2026-10-06T09:00:00".into()],
+                overrides: vec![IcsOverride {
+                    recurrence_id: "2026-10-13T09:00:00".into(),
+                    summary: "Standup late".into(),
+                    description: String::new(),
+                    location: String::new(),
+                    dtstart: "2026-10-13T10:00:00".into(),
+                    dtend: "2026-10-13T10:15:00".into(),
+                    all_day: false,
+                    transparent: true,
+                    sequence: 1,
+                    updated_at: "2026-09-02T17:00:00.000Z".into(),
+                }],
+            }],
+        );
+        assert!(ics.contains("BEGIN:VTIMEZONE"));
+        assert!(ics.contains("TZID:America/Los_Angeles"));
+        assert!(ics.contains("DTSTART;TZID=America/Los_Angeles:20260922T090000"));
+        assert!(ics.contains("DTEND;TZID=America/Los_Angeles:20260922T091500"));
+        assert!(ics.contains("RRULE:FREQ=WEEKLY;BYDAY=TU"));
+        assert!(ics.contains("EXDATE;TZID=America/Los_Angeles:20261006T090000"));
+        assert!(ics.contains("RECURRENCE-ID;TZID=America/Los_Angeles:20261013T090000"));
+        assert!(ics.contains("SUMMARY:Standup late"));
+        assert_eq!(ics.matches("BEGIN:VTIMEZONE").count(), 1);
+        assert!(!ics.contains("DTSTART:20260922T090000Z"));
+    }
+
+    #[test]
+    fn emits_all_day_rrule_without_a_timezone() {
+        let ics = render_calendar(
+            "My Calendar",
+            &[IcsEvent {
+                uid: "off".into(),
+                summary: "Off".into(),
+                description: String::new(),
+                location: String::new(),
+                dtstart: "2026-09-22".into(),
+                dtend: "2026-09-23".into(),
+                all_day: true,
+                transparent: true,
+                sequence: 0,
+                updated_at: "2026-09-01T17:00:00.000Z".into(),
+                rrule: "FREQ=WEEKLY".into(),
+                tzid: String::new(),
+                exdates: vec!["2026-10-06".into()],
+                overrides: Vec::new(),
+            }],
+        );
+        assert!(ics.contains("DTSTART;VALUE=DATE:20260922"));
+        assert!(ics.contains("RRULE:FREQ=WEEKLY"));
+        assert!(ics.contains("EXDATE;VALUE=DATE:20261006"));
+        assert!(!ics.contains("TZID="));
+        assert!(!ics.contains("VTIMEZONE"));
     }
 }

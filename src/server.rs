@@ -1,9 +1,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::db::{json_calendar, json_event, parse_event_input, parse_event_patch, CalendarRow, Db};
+use crate::db::{
+    json_calendar, json_event, parse_event_input, parse_event_patch, parse_override_input,
+    parse_recurrence_id, CalendarRow, Db,
+};
 use crate::http::{html_response, json_response, text_response, Request, Response};
-use crate::ics::{render_calendar, IcsEvent};
+use crate::ics::{render_calendar, IcsEvent, IcsOverride};
 use crate::json::{parse as parse_json, stringify, Value};
 use crate::landing::{html_created, html_home, json_index, llms_txt};
 use crate::time::now_iso;
@@ -57,9 +60,11 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
         }
         (m, p) if p.starts_with("/v1/c/") => scoped(state, req, m, &p["/v1/c/".len()..]),
         (m, "/v1/events") => home_events(state, req, m, None),
-        (m, p) if let Some(uid) = p.strip_prefix("/v1/events/") => {
-            home_events(state, req, m, Some(uid))
-        }
+        (m, p) if let Some(rest) = p.strip_prefix("/v1/events/") => match event_path(rest) {
+            EventPath::Event(uid) => home_events(state, req, m, Some(uid)),
+            EventPath::Exdates(uid) => exception(state, req, None, m, uid, true),
+            EventPath::Overrides(uid) => exception(state, req, None, m, uid, false),
+        },
         _ => json_err(404, "not found"),
     }
 }
@@ -153,6 +158,25 @@ fn feed(state: &AppState, token: &str) -> Response {
             transparent: ev.transparent,
             sequence: ev.sequence,
             updated_at: ev.updated_at,
+            rrule: ev.rrule,
+            tzid: ev.tzid,
+            exdates: ev.exdates,
+            overrides: ev
+                .overrides
+                .into_iter()
+                .map(|over| IcsOverride {
+                    recurrence_id: over.recurrence_id,
+                    summary: over.summary,
+                    description: over.description,
+                    location: over.location,
+                    dtstart: over.dtstart,
+                    dtend: over.dtend,
+                    all_day: over.all_day,
+                    transparent: over.transparent,
+                    sequence: over.sequence,
+                    updated_at: over.updated_at,
+                })
+                .collect(),
         })
         .collect();
     text_response(
@@ -181,13 +205,17 @@ fn scoped(state: &AppState, req: &Request, method: &str, rest: &str) -> Response
             _ => json_err(404, "not found"),
         };
     }
-    if let Some(uid) = rest.strip_prefix("events/") {
-        return match method {
-            "GET" => get_event(state, req, id, uid),
-            "PUT" => put_event(state, req, id, uid),
-            "PATCH" => patch_event(state, req, id, uid),
-            "DELETE" => delete_event(state, req, id, uid),
-            _ => json_err(404, "not found"),
+    if let Some(rest) = rest.strip_prefix("events/") {
+        return match event_path(rest) {
+            EventPath::Event(uid) => match method {
+                "GET" => get_event(state, req, id, uid),
+                "PUT" => put_event(state, req, id, uid),
+                "PATCH" => patch_event(state, req, id, uid),
+                "DELETE" => delete_event(state, req, id, uid),
+                _ => json_err(404, "not found"),
+            },
+            EventPath::Exdates(uid) => exception(state, req, Some(id), method, uid, true),
+            EventPath::Overrides(uid) => exception(state, req, Some(id), method, uid, false),
         };
     }
     json_err(404, "not found")
@@ -448,4 +476,89 @@ fn json_err(status: u16, msg: &str) -> Response {
         status,
         &stringify(&Value::object(&[("error", Value::String(msg.into()))])),
     )
+}
+
+enum EventPath<'a> {
+    Event(&'a str),
+    Exdates(&'a str),
+    Overrides(&'a str),
+}
+
+fn event_path(rest: &str) -> EventPath<'_> {
+    match rest.split_once('/') {
+        Some((uid, "exdates")) => EventPath::Exdates(uid),
+        Some((uid, "overrides")) => EventPath::Overrides(uid),
+        Some(_) => EventPath::Event(rest),
+        None => EventPath::Event(rest),
+    }
+}
+
+fn exception(
+    state: &AppState,
+    req: &Request,
+    calendar_id: Option<&str>,
+    method: &str,
+    uid: &str,
+    exdate: bool,
+) -> Response {
+    if method != "PUT" && method != "DELETE" {
+        return json_err(404, "not found");
+    }
+    let db = state.db.lock().expect("db");
+    let Some(cal) = authed_calendar(&db, req, calendar_id) else {
+        return json_err(401, "unauthorized");
+    };
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(e) => return json_err(400, &e),
+    };
+    let result = if exdate {
+        let recurrence_id = match parse_recurrence_id(&body) {
+            Ok(id) => id,
+            Err(e) => return json_err(400, &e),
+        };
+        if method == "PUT" {
+            db.put_exdate(&cal.id, uid, &recurrence_id)
+                .map(|(row, created)| (row, created))
+        } else {
+            match db.delete_exdate(&cal.id, uid, &recurrence_id) {
+                Ok(true) => return Response::new(204),
+                Ok(false) => return json_err(404, "not found"),
+                Err(e) if e == "not found" => return json_err(404, &e),
+                Err(e) => return json_err(400, &e),
+            }
+        }
+    } else if method == "PUT" {
+        let input = match parse_override_input(&body) {
+            Ok(input) => input,
+            Err(e) => return json_err(400, &e),
+        };
+        db.put_override(&cal.id, uid, &input)
+    } else {
+        let recurrence_id = match parse_recurrence_id(&body) {
+            Ok(id) => id,
+            Err(e) => return json_err(400, &e),
+        };
+        match db.delete_override(&cal.id, uid, &recurrence_id) {
+            Ok(true) => return Response::new(204),
+            Ok(false) => return json_err(404, "not found"),
+            Err(e) if e == "not found" => return json_err(404, &e),
+            Err(e) => return json_err(400, &e),
+        }
+    };
+    match result {
+        Ok((row, created)) => json_response(
+            if created { 201 } else { 200 },
+            &stringify(&json_event(&row)),
+        ),
+        Err(e) if e == "not found" => json_err(404, &e),
+        Err(e) => json_err(400, &e),
+    }
+}
+
+fn authed_calendar(db: &Db, req: &Request, id: Option<&str>) -> Option<CalendarRow> {
+    match id {
+        Some(id) => calendar_auth(db, id, req.header("authorization")),
+        None => home_auth(db, req),
+    }
 }

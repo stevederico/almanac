@@ -52,6 +52,8 @@ curl -sS -X PUT "$WRITE/dentist-2026-08-18" \
 | `description` | string | no | ≤4000 |
 | `allDay` | bool | no | Or inferred from date-only start |
 | `transparent` | bool | no | Default `true` |
+| `rrule` | string | no | Repeat rule, no `RRULE:` prefix. Omit or `""` is one event |
+| `timeZone` | string | timed series | IANA name. Required when `rrule` is set and the event is not all-day |
 
 ## Other
 
@@ -59,6 +61,42 @@ curl -sS -X PUT "$WRITE/dentist-2026-08-18" \
 curl -sS "$WRITE" -H "Authorization: Bearer $KEY"
 curl -sS -X PATCH "$WRITE/dentist-2026-08-18" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"location":"Fillmore"}'
 curl -sS -X DELETE "$WRITE/dentist-2026-08-18" -H "Authorization: Bearer $KEY"
+```
+
+Weekly series. `start` / `end` in the response are the wall clock, not `Z`.
+
+```bash
+curl -sS -X PUT "$WRITE/standup" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "summary": "Standup",
+    "start": "2026-09-22T09:00:00-07:00",
+    "end": "2026-09-22T09:15:00-07:00",
+    "timeZone": "America/Los_Angeles",
+    "rrule": "FREQ=WEEKLY;BYDAY=TU"
+  }'
+```
+
+Skip one date, or replace one date. `recurrenceId` is the original start: `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS`. Not a new uid.
+
+```bash
+curl -sS -X PUT "$WRITE/standup/exdates" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"recurrenceId":"2026-10-06T09:00:00"}'
+curl -sS -X DELETE "$WRITE/standup/exdates" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"recurrenceId":"2026-10-06T09:00:00"}'
+curl -sS -X PUT "$WRITE/standup/overrides" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"recurrenceId":"2026-10-13T09:00:00","start":"2026-10-13T10:00:00","end":"2026-10-13T10:15:00"}'
+curl -sS -X DELETE "$WRITE/standup/overrides" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"recurrenceId":"2026-10-13T09:00:00"}'
 ```
 
 Subscribe: paste `subscribe` in Calendar → File → New Calendar Subscription. Use `https://`, not `webcal://`.
@@ -76,5 +114,9 @@ Machine docs: `GET /llms.txt`. Humans: `GET /`.
 - Stable `uid` per event. New uid = duplicate.
 - Timed events need a timezone offset.
 - All-day: `"start": "2026-08-20"`.
-- No RRULE. One row per occurrence.
+- A series is one uid plus `rrule`. The feed emits `RRULE`. Calendar apps expand it.
+- Timed series need `timeZone`: `UTC`, `America/Los_Angeles`, `America/Denver`, `America/Chicago`, `America/New_York`, `America/Phoenix`, `Pacific/Honolulu`, `Europe/London`, `Europe/Paris`, `Asia/Tokyo`, `Australia/Sydney`.
+- `RRULE` parts: `FREQ` (`DAILY`, `WEEKLY`, `MONTHLY`, `YEARLY`), `INTERVAL`, `COUNT` or `UNTIL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`.
+- One occurrence is an exdate or an override on that uid, not a new uid.
+- Clearing `rrule`, or flipping `allDay`, fails while an exception exists. On a timed series, send `start` and `end` with an offset when you remove `rrule`.
 - Calendar polls. Refresh if it is missing.
