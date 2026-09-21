@@ -46,6 +46,7 @@ pub fn llms_txt(base: &str) -> String {
         &format!("POST {origin}/calendars"),
         "Optional JSON body: { \"name\": \"Optional Title\" }",
         "Returns id, subscribe URL, write URL, todos and notes URLs, and key. Store the key. It is the write secret, shown once. A lost key cannot be recovered. The same key writes events, todos and notes.",
+        "Delete a calendar: DELETE /v1/c/{id} with the same Authorization. 204 when it is gone, including its events, todos, notes and feeds. A missing id or a wrong key is 401. The home calendar cannot be deleted. Do not create or delete a calendar unless asked.",
         "",
         "Write (idempotent):",
         &format!("PUT {origin}/v1/c/{{id}}/events/{{uid}}"),

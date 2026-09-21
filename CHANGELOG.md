@@ -1,3 +1,9 @@
+0.22.0
+
+  Add calendar delete
+  Refuse home delete
+  Document the endpoint
+
 0.21.0
 
   Add backup to-do

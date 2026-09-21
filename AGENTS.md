@@ -27,6 +27,15 @@ Success `201`:
 
 Store `id` and `key`. The key is the write secret. It is shown once and cannot be recovered; only its hash is stored. The same key writes events and todos. The response also has `todos.write`, `todos.subscribe`, `notes.write` and `notes.subscribe`.
 
+## Delete
+
+```bash
+curl -sS -X DELETE "$BASE/v1/c/$ID" \
+  -H "Authorization: Bearer $KEY"
+```
+
+`204` when the calendar is gone, along with its events, todos, notes, and feed URLs. A missing id or a wrong key is `401`. Deleting again is `401`. The `home` calendar cannot be deleted (`403`). Do not create or delete a calendar unless asked.
+
 ## Write
 
 ```bash

@@ -206,6 +206,30 @@ impl Db {
         Ok((row, key))
     }
 
+    /// Remove a calendar and everything on it. Children first: there are no
+    /// foreign keys, so a crash between statements must not leave rows whose
+    /// calendar is already gone. Dropping the transaction rolls the whole
+    /// delete back.
+    pub fn delete_calendar(&self, id: &str) -> Result<bool, String> {
+        let tx = self.conn.begin()?;
+        if self.get_calendar(id)?.is_none() {
+            return Ok(false);
+        }
+        let id_bind = [Bind::Text(id)];
+        for sql in [
+            "DELETE FROM event_exceptions WHERE calendar_id = ?1",
+            "DELETE FROM events WHERE calendar_id = ?1",
+            "DELETE FROM todos WHERE calendar_id = ?1",
+            "DELETE FROM notes WHERE calendar_id = ?1",
+            "DELETE FROM feeds WHERE calendar_id = ?1",
+            "DELETE FROM calendars WHERE id = ?1",
+        ] {
+            self.conn.execute(sql, &id_bind)?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Make the `home` calendar match the environment.
     ///
     /// The env is the source of truth: a changed `AGENT_KEY`, `FEED_TOKEN` or

@@ -6,7 +6,7 @@ Prod: `https://almanac.dottie.ai`. Do not use `webcal://`.
 
 ## Use
 
-`POST /calendars` returns `id`, `subscribe`, `write`, and `key`. The key is shown once; only its hash is stored. The same key writes events, todos, and notes on that calendar. There is no delete, so a create is permanent.
+`POST /calendars` returns `id`, `subscribe`, `write`, and `key`. The key is shown once; only its hash is stored. The same key writes events, todos, and notes on that calendar. `DELETE /v1/c/:id` with that key removes the calendar. Do not create or delete one unless asked.
 
 Subscribe: Calendar → File → New Calendar Subscription → paste the `subscribe` URL. Use `https://`.
 

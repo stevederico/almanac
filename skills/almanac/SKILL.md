@@ -10,7 +10,7 @@ description: >
 
 # almanac
 
-A default calendar already exists. Events, todos and notes all live on it and one key writes all three. Do not `POST /calendars` unless asked to create another: there is no delete, so every create is permanent.
+A default calendar already exists. Events, todos and notes all live on it and one key writes all three. Do not `POST /calendars` unless asked to create another, and do not delete a calendar unless asked.
 
 ```bash
 BASE=https://almanac.dottie.ai
@@ -74,6 +74,8 @@ Back up: run `~/Projects/almanac/scripts/pull-export`. It saves a private copy o
 ## Other
 
 Create (only if asked): `POST $BASE/calendars` with `{"name":"Optional Title"}`. The response is the only time the `key` is shown. Store `id` and `key` in `~/.config/almanac/hosted-calendars.json` at once, mode 600, never in a synced folder.
+
+Delete (only if asked): `DELETE $BASE/v1/c/$ID` with the same key. `204` when it is gone, including its events, todos, notes and feeds. A missing id or a wrong key is `401`. The `home` calendar cannot be deleted.
 
 Old local home calendar (`AGENT_KEY` in `~/Projects/almanac/.env`, `PUT $BASE/v1/events/<uid>`) is not the default.
 

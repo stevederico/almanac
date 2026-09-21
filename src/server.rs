@@ -401,10 +401,11 @@ fn render_events(name: &str, events: Vec<EventRow>) -> String {
 
 fn scoped(state: &AppState, req: &Request, method: &str, rest: &str) -> Response {
     let Some((id, rest)) = rest.split_once('/') else {
-        if method != "GET" {
-            return json_err(404, "not found");
-        }
-        return calendar_info(state, req, rest);
+        return match method {
+            "GET" => calendar_info(state, req, rest),
+            "DELETE" => delete_calendar(state, req, rest),
+            _ => json_err(404, "not found"),
+        };
     };
     if rest == "events" {
         return events(state, req, id, method, Target::Collection);
@@ -510,6 +511,23 @@ fn item_route(
     match resource {
         Resource::Todos => todos::route(state, req, cal_id, method, Some(uid)),
         Resource::Notes => notes::route(state, req, cal_id, method, Some(uid)),
+    }
+}
+
+fn delete_calendar(state: &AppState, req: &Request, id: &str) -> Response {
+    let cal = match gate(state, req, id, "DELETE") {
+        Ok(cal) => cal,
+        Err(res) => return res,
+    };
+    // After auth, so a wrong key is 401 and does not reveal that `home` exists.
+    // The env recreates `home` on the next boot, so deleting it would not stick.
+    if is_home(&cal) {
+        return json_err(403, "home calendar cannot be deleted");
+    }
+    match lock_db(state).delete_calendar(&cal.id) {
+        Ok(true) => Response::new(204),
+        Ok(false) => json_err(404, "not found"),
+        Err(e) => json_err(500, &e),
     }
 }
 

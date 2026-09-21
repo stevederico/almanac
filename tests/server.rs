@@ -166,6 +166,196 @@ fn isolates_two_calendars() {
     assert_eq!(steal, 401);
 }
 
+fn created(app: &AppState, name: &str) -> Value {
+    let (_, body, _) = send(
+        app,
+        Request::new("POST", "/calendars")
+            .with_header("content-type", "application/json")
+            .with_header("accept", "application/json")
+            .with_body(format!(r#"{{"name":"{name}"}}"#).into_bytes()),
+    );
+    parse(std::str::from_utf8(&body).unwrap()).unwrap()
+}
+
+fn bearer(method: &str, path: &str, key: &str, body: Option<&str>) -> Request {
+    let mut req = Request::new(method, path).with_header("authorization", &format!("Bearer {key}"));
+    if let Some(body) = body {
+        req = req
+            .with_header("content-type", "application/json")
+            .with_body(body.as_bytes().to_vec());
+    }
+    req
+}
+
+fn str_field<'a>(v: &'a Value, key: &str) -> &'a str {
+    v.get(key).and_then(Value::as_str).unwrap()
+}
+
+/// Path of a feed URL from a create response. `keys` walks nested objects.
+fn feed_path(v: &Value, keys: &[&str]) -> String {
+    let mut cur = v;
+    for key in keys {
+        cur = cur.get(key).unwrap();
+    }
+    cur.as_str().unwrap().trim_start_matches(BASE).to_string()
+}
+
+#[test]
+fn deletes_a_calendar_its_feeds_and_leaves_another_alone() {
+    let app = test_app();
+    let a = created(&app, "Gone");
+    let b = created(&app, "Stays");
+    let a_id = str_field(&a, "id");
+    let a_key = str_field(&a, "key");
+    let b_id = str_field(&b, "id");
+    let b_key = str_field(&b, "key");
+    let feeds = [
+        feed_path(&a, &["subscribe"]),
+        feed_path(&a, &["todos", "subscribe"]),
+        feed_path(&a, &["notes", "subscribe"]),
+    ];
+
+    assert_eq!(
+        send(
+            &app,
+            bearer(
+                "PUT",
+                &format!("/v1/c/{a_id}/events/e"),
+                a_key,
+                Some(r#"{"summary":"A","start":"2026-08-16T12:00:00Z"}"#),
+            ),
+        )
+        .0,
+        201
+    );
+    assert_eq!(
+        send(
+            &app,
+            bearer(
+                "PUT",
+                &format!("/v1/c/{a_id}/todos/t"),
+                a_key,
+                Some(r#"{"title":"A"}"#),
+            ),
+        )
+        .0,
+        201
+    );
+    assert_eq!(
+        send(
+            &app,
+            bearer(
+                "PUT",
+                &format!("/v1/c/{a_id}/notes/n"),
+                a_key,
+                Some(r#"{"title":"A","body":"secret"}"#),
+            ),
+        )
+        .0,
+        201
+    );
+    assert_eq!(
+        send(
+            &app,
+            bearer(
+                "PUT",
+                &format!("/v1/c/{b_id}/events/kept"),
+                b_key,
+                Some(r#"{"summary":"B","start":"2026-08-16T13:00:00Z"}"#),
+            ),
+        )
+        .0,
+        201
+    );
+    for path in &feeds {
+        assert_eq!(send(&app, Request::new("GET", path)).0, 200, "{path}");
+    }
+
+    assert_eq!(
+        send(&app, bearer("DELETE", &format!("/v1/c/{a_id}"), a_key, None)).0,
+        204
+    );
+    assert_eq!(
+        send(&app, bearer("DELETE", &format!("/v1/c/{a_id}"), a_key, None)).0,
+        401,
+        "a second delete is the same as a missing calendar"
+    );
+    assert_eq!(
+        send(&app, bearer("GET", &format!("/v1/c/{a_id}/events"), a_key, None)).0,
+        401
+    );
+    assert_eq!(
+        send(&app, bearer("PUT", &format!("/v1/c/{a_id}/events/e"), a_key, Some(r#"{"summary":"A","start":"2026-08-16T12:00:00Z"}"#))).0,
+        401
+    );
+    for path in &feeds {
+        assert_eq!(send(&app, Request::new("GET", path)).0, 404, "{path}");
+    }
+
+    let db = app.db.lock().unwrap();
+    assert!(db.get_calendar(a_id).unwrap().is_none());
+    assert!(db.get_event(a_id, "e").unwrap().is_none());
+    assert!(db.get_todo(a_id, "t").unwrap().is_none());
+    assert!(db.get_note(a_id, "n").unwrap().is_none());
+    drop(db);
+
+    let (status, body, _) = send(
+        &app,
+        bearer("GET", &format!("/v1/c/{b_id}/events"), b_key, None),
+    );
+    assert_eq!(status, 200);
+    let listed = parse(std::str::from_utf8(&body).unwrap()).unwrap();
+    assert_eq!(
+        listed.get("events").and_then(Value::as_array).unwrap().len(),
+        1
+    );
+    assert_eq!(send(&app, Request::new("GET", &feed_path(&b, &["subscribe"]))).0, 200);
+}
+
+#[test]
+fn a_wrong_key_does_not_delete_a_calendar() {
+    let app = test_app();
+    let cal = created(&app, "Kept");
+    let id = str_field(&cal, "id");
+    let key = str_field(&cal, "key");
+    assert_eq!(
+        send(
+            &app,
+            bearer(
+                "PUT",
+                &format!("/v1/c/{id}/events/e"),
+                key,
+                Some(r#"{"summary":"Stay","start":"2026-08-16T12:00:00Z"}"#),
+            ),
+        )
+        .0,
+        201
+    );
+    assert_eq!(
+        send(&app, bearer("DELETE", &format!("/v1/c/{id}"), "wrong-key", None)).0,
+        401
+    );
+    assert!(app.db.lock().unwrap().get_event(id, "e").unwrap().is_some());
+    assert_eq!(
+        send(&app, bearer("GET", &format!("/v1/c/{id}/events"), key, None)).0,
+        200
+    );
+}
+
+#[test]
+fn the_home_calendar_cannot_be_deleted() {
+    let app = test_app();
+    assert_eq!(
+        send(&app, bearer("DELETE", "/v1/c/home", "wrong-key", None)).0,
+        401
+    );
+    let (status, body, _) = send(&app, bearer("DELETE", "/v1/c/home", KEY, None));
+    assert_eq!(status, 403);
+    assert!(String::from_utf8(body).unwrap().contains("home calendar cannot be deleted"));
+    assert!(app.db.lock().unwrap().get_calendar("home").unwrap().is_some());
+    assert_eq!(send(&app, auth_get("/v1/events")).0, 200);
+}
+
 #[test]
 fn feed_404s_a_wrong_token() {
     let (status, _, _) = send(&test_app(), Request::new("GET", "/feed/nope.ics"));
@@ -957,4 +1147,6 @@ fn llms_txt_documents_todos() {
     assert!(text.contains("todos.subscribe"));
     assert!(text.contains("/v1/c/{id}/notes"));
     assert!(text.contains("notes.subscribe"));
+    assert!(text.contains("DELETE /v1/c/{id}"));
+    assert!(text.contains("home calendar cannot be deleted"));
 }

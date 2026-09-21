@@ -30,6 +30,10 @@ fn has_the_front_matter_a_skill_loader_needs() {
 #[test]
 fn documents_every_resource_the_api_serves() {
     let text = skill();
+    assert!(
+        text.contains("DELETE $BASE/v1/c/$ID"),
+        "the skill does not show how to delete a calendar"
+    );
     for kind in ["events", "todos", "notes", "export"] {
         assert!(
             text.contains(&format!("/v1/c/$ID/{kind}")),
