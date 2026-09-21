@@ -1,3 +1,7 @@
+0.24.0
+
+  Link SQLCipher 4.18
+
 0.23.0
 
   Encrypt database file
