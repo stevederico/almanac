@@ -1,3 +1,11 @@
+0.13.0
+
+  Redesign landing page
+  Show three products
+  Remove mascot
+  Render new share image
+  Use system fonts
+
 0.12.0
 
   Update landing page

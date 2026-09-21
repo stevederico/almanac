@@ -18,7 +18,6 @@ use crate::notes::{self, NoteRow};
 use crate::todos::{self, TodoRow};
 
 const OG_PNG: &[u8] = include_bytes!("../public/og.png");
-const MASCOT_WEBP: &[u8] = include_bytes!("../public/mascot.webp");
 
 #[derive(Clone)]
 pub struct AppState {
@@ -76,7 +75,6 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
             text_response(200, "text/plain; charset=utf-8", llms_txt(&base))
         }
         ("GET", "/og.png") => text_response(200, "image/png", OG_PNG.to_vec()),
-        ("GET", "/mascot.webp") => text_response(200, "image/webp", MASCOT_WEBP.to_vec()),
         ("POST", "/calendars") => create_calendar(state, req),
         (m, p) if p.starts_with("/feed/") => {
             if m != "GET" && m != "HEAD" {

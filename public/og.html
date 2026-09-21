@@ -5,25 +5,28 @@
   <style>
     html, body { margin: 0; padding: 0; width: 1200px; height: 630px; overflow: hidden; }
     body {
-      display: flex;
-      align-items: center;
-      gap: 56px;
-      padding: 0 72px;
       box-sizing: border-box;
-      background: #111;
-      color: #e8e8e8;
-      font: 600 16px/1.2 ui-sans-serif, system-ui, -apple-system, sans-serif;
+      padding: 64px 72px;
+      background: #111210;
+      color: #e9e6da;
+      font: 500 16px/1.2 "IBM Plex Mono", "JetBrainsMono NF", "JetBrains Mono", ui-monospace, Menlo, monospace;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
     }
-    img { width: 380px; height: 380px; object-fit: contain; flex: none; }
-    h1 { font-size: 84px; letter-spacing: -0.04em; margin: 0 0 16px; font-weight: 650; }
-    p { font-size: 44px; font-weight: 500; color: #9a9a9a; margin: 0; }
+    .word { font-size: 26px; font-weight: 600; }
+    .word i { font-style: normal; color: #f2b84b; }
+    h1 { margin: 0 0 24px; font-size: 82px; line-height: 1.02; letter-spacing: -0.04em; font-weight: 500; max-width: 980px; }
+    p { margin: 0; font-size: 28px; color: #a29e90; }
+    .feeds { display: flex; gap: 40px; padding-top: 24px; border-top: 1px solid #2a2c25; font-size: 22px; color: #f2b84b; }
   </style>
 </head>
 <body>
-  <img src="mascot.webp" alt="">
+  <div class="word">almanac<i>_</i></div>
   <div>
-    <h1>Almanac</h1>
-    <p>An Agent Calendar</p>
+    <h1>Your agent keeps the calendar.</h1>
+    <p>Calendar, todos and notes. One key.</p>
   </div>
+  <div class="feeds"><span>/events</span><span>/todos</span><span>/notes</span></div>
 </body>
 </html>

@@ -52,9 +52,9 @@ fn returns_html_for_browsers() {
     );
     assert_eq!(status, 200);
     let html = String::from_utf8(body).unwrap();
-    assert!(html.contains("An Agent Calendar"));
-    assert!(html.contains("Send your agent here"));
-    assert!(html.contains("Copy Prompt"));
+    assert!(html.contains("Your agent keeps the calendar."));
+    assert!(html.contains("send your agent this"));
+    assert!(html.contains("Copy prompt"));
     assert!(html.contains("/llms.txt"));
     assert!(html.contains("/calendars"));
     assert!(html.contains("Subscribe from web"));
@@ -63,6 +63,15 @@ fn returns_html_for_browsers() {
     assert!(html.contains("todos") && html.contains("notes"));
     assert!(html.contains("todos.subscribe") && html.contains("notes.subscribe"));
     assert!(html.contains("/export"));
+    // The three products are shown, not just described, and the bunny is gone.
+    for app in ["A calendar app", "A todo app", "A notes app"] {
+        assert!(html.contains(app), "no mockup for {app}");
+    }
+    assert!(html.contains("Three products. One key."));
+    assert!(!html.contains("mascot") && !html.contains("<img"));
+    // No external requests: fonts and images are all local.
+    assert!(!html.contains("fonts.googleapis"));
+    assert!(!html.contains("<link rel=\"stylesheet\""));
     assert!(!html.contains("{origin}"), "an unformatted placeholder leaked into the page");
     assert!(html.contains("example.test/v1/c/{id}/export"));
     assert!(html.contains("og.png"));
