@@ -139,6 +139,12 @@ fn create_calendar(state: &AppState, req: &Request) -> Response {
         .limiter
         .check("c:*", limits.creates_global_hour, HOUR_MS)
     {
+        // Nobody can create a calendar while this holds, so say so loudly:
+        // it means either real growth or a caller picking its own bucket.
+        eprintln!(
+            "almanac: GLOBAL create limit of {}/hour reached, creation is blocked for {retry}s",
+            limits.creates_global_hour
+        );
         return too_many(retry);
     }
     let ctype = req.header("content-type");

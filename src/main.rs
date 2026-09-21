@@ -48,14 +48,9 @@ fn main() {
     }
     let public_base = std::env::var("PUBLIC_BASE").unwrap_or_default();
     let mut state = AppState::new(db, public_base);
-    // Proxies in front of us that each append to X-Forwarded-For. Sets which
-    // entry the rate limiter treats as the client. See `limits::client_id`.
-    if let Some(hops) = std::env::var("TRUSTED_PROXY_HOPS")
-        .ok()
-        .and_then(|v| v.trim().parse().ok())
-    {
-        state.limits.proxy_hops = hops;
-    }
+    // TRUSTED_PROXY_HOPS sets which X-Forwarded-For entry counts as the
+    // client; the rest tune the caps. See `limits::Limits`.
+    state.limits = state.limits.from_env(|k| std::env::var(k).ok());
     let binds = listen_hosts(&cfg.host);
     let mut listeners = Vec::new();
     for host in &binds {

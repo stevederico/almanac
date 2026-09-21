@@ -1,3 +1,10 @@
+0.6.0
+
+  Sweep on timer
+  Raise global cap
+  Log global block
+  Add limit env vars
+
 0.5.0
 
   Strip control chars
