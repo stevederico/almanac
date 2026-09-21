@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+
 
 use almanac::db::Db;
 use almanac::http::Request;
@@ -15,10 +15,7 @@ fn test_app() -> AppState {
     std::fs::create_dir_all(&dir).unwrap();
     let db = Db::open(dir.join("calendar.db")).unwrap();
     db.ensure_home_calendar(FEED, KEY, "My Calendar").unwrap();
-    AppState {
-        db: Arc::new(Mutex::new(db)),
-        public_base: BASE.into(),
-    }
+    AppState::new(db, BASE.into())
 }
 
 fn send(state: &AppState, req: Request) -> (u16, Vec<u8>, almanac::http::Response) {
@@ -564,5 +561,207 @@ fn form_names_with_stray_percent_signs_do_not_panic() {
                 .with_body(format!("name={name}").into_bytes()),
         );
         assert_eq!(status, 201, "{name}");
+    }
+}
+
+// ---- limits ----------------------------------------------------------------
+
+fn create(app: &AppState, xff: Option<&str>) -> (u16, almanac::http::Response) {
+    let mut req = Request::new("POST", "/calendars")
+        .with_header("content-type", "application/json")
+        .with_header("accept", "application/json")
+        .with_body(b"{}".to_vec());
+    if let Some(xff) = xff {
+        req = req.with_header("x-forwarded-for", xff);
+    }
+    let (status, _, res) = send(app, req);
+    (status, res)
+}
+
+fn new_calendar(app: &AppState) -> (String, String) {
+    let (status, res) = create(app, None);
+    assert_eq!(status, 201);
+    let v = parse(std::str::from_utf8(&res.body).unwrap()).unwrap();
+    (
+        v.get("id").and_then(Value::as_str).unwrap().to_string(),
+        v.get("key").and_then(Value::as_str).unwrap().to_string(),
+    )
+}
+
+fn call(app: &AppState, method: &str, path: &str, key: &str, body: &str) -> u16 {
+    send(
+        app,
+        Request::new(method, path)
+            .with_header("authorization", &format!("Bearer {key}"))
+            .with_header("content-type", "application/json")
+            .with_body(body.as_bytes().to_vec()),
+    )
+    .0
+}
+
+fn day(n: u32) -> String {
+    format!(r#"{{"summary":"e{n}","start":"2026-10-{n:02}"}}"#)
+}
+
+#[test]
+fn rate_limits_calendar_creation_per_client() {
+    let mut app = test_app();
+    app.limits.creates_per_client_hour = 3;
+    for _ in 0..3 {
+        assert_eq!(create(&app, Some("1.1.1.1")).0, 201);
+    }
+    let (status, res) = create(&app, Some("1.1.1.1"));
+    assert_eq!(status, 429);
+    let retry: u64 = res.header_value("retry-after").unwrap().parse().unwrap();
+    assert!((1..=3600).contains(&retry));
+    // Another client is unaffected.
+    assert_eq!(create(&app, Some("2.2.2.2")).0, 201);
+    // A caller cannot pick their own bucket by prepending addresses: one proxy
+    // hop is trusted, so only the rightmost entry counts.
+    assert_eq!(create(&app, Some("9.9.9.9, 1.1.1.1")).0, 429);
+    assert_eq!(create(&app, Some("1.1.1.1, 3.3.3.3")).0, 201);
+}
+
+#[test]
+fn caps_calendar_creation_globally_and_in_total() {
+    let mut app = test_app();
+    app.limits.creates_global_hour = 2;
+    assert_eq!(create(&app, Some("1.1.1.1")).0, 201);
+    assert_eq!(create(&app, Some("2.2.2.2")).0, 201);
+    assert_eq!(create(&app, Some("3.3.3.3")).0, 429);
+
+    let mut app = test_app();
+    // The seeded home calendar counts.
+    app.limits.max_calendars = 3;
+    assert_eq!(create(&app, Some("1.1.1.1")).0, 201);
+    assert_eq!(create(&app, Some("2.2.2.2")).0, 201);
+    assert_eq!(create(&app, Some("3.3.3.3")).0, 503);
+}
+
+#[test]
+fn caps_events_per_calendar_but_not_home() {
+    let mut app = test_app();
+    app.limits.max_events = 3;
+    let (id, key) = new_calendar(&app);
+    let url = |uid: &str| format!("/v1/c/{id}/events/{uid}");
+    for n in 1..=3 {
+        assert_eq!(call(&app, "PUT", &url(&format!("e{n}")), &key, &day(n)), 201);
+    }
+    assert_eq!(call(&app, "PUT", &url("e4"), &key, &day(4)), 409);
+    assert_eq!(
+        call(&app, "POST", &format!("/v1/c/{id}/events"), &key, &day(5)),
+        409
+    );
+    // Replacing an existing event is not adding one.
+    assert_eq!(call(&app, "PUT", &url("e1"), &key, &day(6)), 200);
+    // Deleting frees a slot.
+    assert_eq!(call(&app, "DELETE", &url("e1"), &key, ""), 204);
+    assert_eq!(call(&app, "PUT", &url("e4"), &key, &day(4)), 201);
+    // The owner's calendar is exempt.
+    for n in 1..=5 {
+        assert_eq!(
+            call(&app, "PUT", &format!("/v1/events/h{n}"), KEY, &day(n)),
+            201
+        );
+    }
+}
+
+#[test]
+fn caps_exceptions_per_series() {
+    let mut app = test_app();
+    app.limits.max_exceptions = 2;
+    let (id, key) = new_calendar(&app);
+    let base = format!("/v1/c/{id}/events/standup");
+    let series = r#"{"summary":"S","start":"2026-09-22T09:00:00-07:00","end":"2026-09-22T09:15:00-07:00","timeZone":"America/Los_Angeles","rrule":"FREQ=WEEKLY;BYDAY=TU"}"#;
+    assert_eq!(call(&app, "PUT", &base, &key, series), 201);
+    let ex = |d: &str| format!(r#"{{"recurrenceId":"2026-{d}T09:00:00"}}"#);
+    let ov = |d: &str| {
+        format!(r#"{{"recurrenceId":"2026-{d}T09:00:00","start":"2026-{d}T10:00:00"}}"#)
+    };
+    let exd = format!("{base}/exdates");
+    let ovr = format!("{base}/overrides");
+    assert_eq!(call(&app, "PUT", &exd, &key, &ex("10-06")), 201);
+    assert_eq!(call(&app, "PUT", &ovr, &key, &ov("10-13")), 201);
+    assert_eq!(call(&app, "PUT", &exd, &key, &ex("10-20")), 409);
+    assert_eq!(call(&app, "PUT", &ovr, &key, &ov("10-20")), 409);
+    // Touching one that exists is fine at the cap.
+    assert_eq!(call(&app, "PUT", &exd, &key, &ex("10-06")), 200);
+    assert_eq!(call(&app, "PUT", &ovr, &key, &ov("10-13")), 200);
+    // Removing one makes room. Deleting is never blocked.
+    assert_eq!(call(&app, "DELETE", &exd, &key, &ex("10-06")), 204);
+    assert_eq!(call(&app, "PUT", &exd, &key, &ex("10-20")), 201);
+}
+
+#[test]
+fn rate_limits_writes_per_calendar() {
+    let mut app = test_app();
+    app.limits.writes_per_minute = 3;
+    let (id, key) = new_calendar(&app);
+    let (other_id, other_key) = new_calendar(&app);
+    let url = |uid: &str| format!("/v1/c/{id}/events/{uid}");
+    for n in 1..=3 {
+        assert_eq!(call(&app, "PUT", &url(&format!("e{n}")), &key, &day(n)), 201);
+    }
+    assert_eq!(call(&app, "PUT", &url("e4"), &key, &day(4)), 429);
+    assert_eq!(call(&app, "DELETE", &url("e1"), &key, ""), 429);
+    // Reads are free, other calendars have their own budget, and someone
+    // without the key cannot spend this calendar's.
+    assert_eq!(call(&app, "GET", &url("e1"), &key, ""), 200);
+    assert_eq!(
+        call(&app, "PUT", &format!("/v1/c/{other_id}/events/x"), &other_key, &day(1)),
+        201
+    );
+    assert_eq!(call(&app, "PUT", &url("e9"), "wrong-key", &day(9)), 401);
+    // The owner is exempt.
+    for n in 1..=6 {
+        assert_eq!(
+            call(&app, "PUT", &format!("/v1/events/h{n}"), KEY, &day(n)),
+            201
+        );
+    }
+}
+
+#[test]
+fn a_wrong_key_does_not_spend_the_write_budget() {
+    let mut app = test_app();
+    app.limits.writes_per_minute = 1;
+    let (id, key) = new_calendar(&app);
+    for _ in 0..5 {
+        assert_eq!(
+            call(&app, "PUT", &format!("/v1/c/{id}/events/a"), "wrong", &day(1)),
+            401
+        );
+    }
+    assert_eq!(
+        call(&app, "PUT", &format!("/v1/c/{id}/events/a"), &key, &day(1)),
+        201
+    );
+}
+
+#[test]
+fn feed_keeps_each_series_own_exceptions() {
+    let app = test_app();
+    let series = |uid: &str| {
+        (
+            format!("/v1/events/{uid}"),
+            r#"{"summary":"S","start":"2026-09-22T09:00:00-07:00","end":"2026-09-22T09:15:00-07:00","timeZone":"America/Los_Angeles","rrule":"FREQ=WEEKLY;BYDAY=TU"}"#,
+        )
+    };
+    for (uid, skip) in [("a", "2026-10-06"), ("b", "2026-10-13")] {
+        let (path, body) = series(uid);
+        assert_eq!(call(&app, "PUT", &path, KEY, body), 201);
+        let ex = format!(r#"{{"recurrenceId":"{skip}T09:00:00"}}"#);
+        assert_eq!(call(&app, "PUT", &format!("{path}/exdates"), KEY, &ex), 201);
+    }
+    let (status, body, _) = send(&app, Request::new("GET", &format!("/feed/{FEED}.ics")));
+    assert_eq!(status, 200);
+    let ics = String::from_utf8(body).unwrap().replace("\r\n ", "");
+    for (uid, own, other) in [("a", "20261006", "20261013"), ("b", "20261013", "20261006")] {
+        let vevent = ics
+            .split("BEGIN:VEVENT")
+            .find(|v| v.contains(&format!("UID:{uid}\r\n")))
+            .unwrap();
+        assert!(vevent.contains(&format!("EXDATE;TZID=America/Los_Angeles:{own}T090000")));
+        assert!(!vevent.contains(other), "{uid} picked up another series' exception");
     }
 }

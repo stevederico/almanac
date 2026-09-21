@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::ics::next_date;
@@ -123,6 +124,24 @@ impl Db {
             .ok_or_else(|| "db did not answer".to_string())
     }
 
+    pub fn count_calendars(&self) -> Result<i64, String> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM calendars", &[], |row| row.i64(0))?
+            .unwrap_or(0))
+    }
+
+    pub fn count_events(&self, calendar_id: &str) -> Result<i64, String> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE calendar_id = ?1",
+                &[Bind::Text(calendar_id)],
+                |row| row.i64(0),
+            )?
+            .unwrap_or(0))
+    }
+
     pub fn get_calendar(&self, id: &str) -> Result<Option<CalendarRow>, String> {
         self.conn.query_row(
             "SELECT id, feed_token, agent_key, name, created_at FROM calendars WHERE id = ?1",
@@ -192,9 +211,16 @@ impl Db {
             &[Bind::Text(calendar_id)],
             row_event,
         )?;
-        let exceptions = self.list_exceptions(calendar_id, None)?;
+        // Group once. Filtering the whole list per event is events x exceptions,
+        // and a feed render pays that while holding the database lock.
+        let mut by_uid: HashMap<String, Vec<ExceptionRow>> = HashMap::new();
+        for ex in self.list_exceptions(calendar_id, None)? {
+            by_uid.entry(ex.uid.clone()).or_default().push(ex);
+        }
         for row in &mut rows {
-            attach_exceptions(row, &exceptions);
+            if let Some(exceptions) = by_uid.get(&row.uid) {
+                attach_exceptions(row, exceptions);
+            }
         }
         Ok(rows)
     }

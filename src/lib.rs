@@ -4,6 +4,7 @@ pub mod http;
 pub mod ics;
 pub mod json;
 pub mod landing;
+pub mod limits;
 pub mod rrule;
 pub mod server;
 pub mod sqlite;

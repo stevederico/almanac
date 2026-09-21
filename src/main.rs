@@ -1,15 +1,15 @@
-use std::io::{BufReader, BufWriter};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use almanac::db::Db;
 use almanac::env::{load_env_file, read_config_from_os};
-use almanac::http::{json_response, read_request, write_response};
+use almanac::http::{json_response, read_request_with, write_response, ReadError};
 use almanac::json::{stringify, Value};
 use almanac::server::{handle, AppState};
 use almanac::time::now_iso;
@@ -33,10 +33,15 @@ fn main() {
         }
     }
     let public_base = std::env::var("PUBLIC_BASE").unwrap_or_default();
-    let state = AppState {
-        db: Arc::new(Mutex::new(db)),
-        public_base,
-    };
+    let mut state = AppState::new(db, public_base);
+    // Proxies in front of us that each append to X-Forwarded-For. Sets which
+    // entry the rate limiter treats as the client. See `limits::client_id`.
+    if let Some(hops) = std::env::var("TRUSTED_PROXY_HOPS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+    {
+        state.limits.proxy_hops = hops;
+    }
     let binds = listen_hosts(&cfg.host);
     let mut listeners = Vec::new();
     for host in &binds {
@@ -74,13 +79,33 @@ fn main() {
     }
 }
 
-/// Give up on a client that has not finished its request headers.
+/// Longest a client may go silent between reads.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Total time a client gets to deliver a whole request, headers and body.
 ///
 /// Every response sends `connection: close` and one request is served per
-/// connection, so no legitimate client holds a socket open waiting. Without a
-/// deadline a client sending one byte a minute never trips the byte caps in
-/// `read_request` and pins its thread forever.
-const READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// connection, so no legitimate client holds a socket open waiting. `READ_TIMEOUT`
+/// alone is per `read()`: a client sending one byte every nine seconds never
+/// trips it and pins its thread. This budget does not reset.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
+
+/// A reader whose timeout shrinks toward a fixed deadline.
+struct DeadlineReader {
+    stream: TcpStream,
+    deadline: Instant,
+}
+
+impl Read for DeadlineReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left.min(READ_TIMEOUT)))?;
+        self.stream.read(buf)
+    }
+}
 
 /// Give up on a client that will not accept its response.
 ///
@@ -130,14 +155,14 @@ fn accept_loop(listener: TcpListener, state: AppState) {
 }
 
 fn serve(stream: TcpStream, state: &AppState) {
-    if let Err(e) = stream.set_read_timeout(Some(READ_TIMEOUT)) {
-        eprintln!("almanac: set_read_timeout failed: {e}");
-        return;
-    }
     if let Err(e) = stream.set_write_timeout(Some(WRITE_TIMEOUT)) {
         eprintln!("almanac: set_write_timeout failed: {e}");
         return;
     }
+    let peer = stream
+        .peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_default();
 
     // Was `.expect("clone")`, which panicked the worker on fd exhaustion --
     // exactly the state a connection flood reaches.
@@ -146,22 +171,35 @@ fn serve(stream: TcpStream, state: &AppState) {
         return;
     };
 
-    let mut reader = BufReader::new(read_half);
-    let req = match read_request(&mut reader) {
-        Ok(r) => r,
-        Err(e) => {
+    let mut reader = BufReader::new(DeadlineReader {
+        stream: read_half,
+        deadline: Instant::now() + REQUEST_DEADLINE,
+    });
+    let mut go_ahead = || {
+        let _ = (&stream).write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
+    };
+    let res = match read_request_with(&mut reader, &mut go_ahead) {
+        Ok(mut req) => {
+            req.peer = peer;
+            // A panic in a handler answers 500 instead of dropping the socket
+            // with no reply. The DB lock recovers from poisoning, so the next
+            // request is fine.
+            catch_unwind(AssertUnwindSafe(|| handle(state, &req))).unwrap_or_else(|_| {
+                eprintln!("almanac: handler panicked: {} {}", req.method, req.path);
+                json_response(500, r#"{"error":"internal error"}"#)
+            })
+        }
+        Err(ReadError::Reject(status, msg)) => {
+            eprintln!("almanac: rejecting request from {peer}: {status} {msg}");
+            json_response(status, &format!(r#"{{"error":"{msg}"}}"#))
+        }
+        Err(ReadError::Closed(why)) => {
             // Nothing logged this before: a stalled connection produced no
             // output at all, so a flood looked like a silent, idle server.
-            eprintln!("almanac: dropping connection: {e}");
+            eprintln!("almanac: dropping connection from {peer}: {why}");
             return;
         }
     };
-    // A panic in a handler answers 500 instead of dropping the socket with no
-    // reply. The DB lock recovers from poisoning, so the next request is fine.
-    let res = catch_unwind(AssertUnwindSafe(|| handle(state, &req))).unwrap_or_else(|_| {
-        eprintln!("almanac: handler panicked: {} {}", req.method, req.path);
-        json_response(500, r#"{"error":"internal error"}"#)
-    });
     let mut writer = BufWriter::new(stream);
     let _ = write_response(&mut writer, &res);
 }
