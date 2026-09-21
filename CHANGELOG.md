@@ -1,3 +1,8 @@
+0.19.0
+
+  Fix skill test
+  Loosen front matter
+
 0.18.0
 
   Teach skill backups

@@ -12,11 +12,19 @@ fn skill() -> String {
 #[test]
 fn has_the_front_matter_a_skill_loader_needs() {
     let text = skill();
-    let head: Vec<&str> = text.lines().take(8).collect();
-    assert_eq!(head[0], "---");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "---");
+    // However long the description grows, the block has to close.
+    let close = lines
+        .iter()
+        .skip(1)
+        .position(|l| *l == "---")
+        .expect("front matter is never closed")
+        + 1;
+    let head = &lines[1..close];
     assert!(head.contains(&"name: almanac"), "{head:?}");
     assert!(head.iter().any(|l| l.starts_with("description:")), "{head:?}");
-    assert!(head.iter().skip(1).any(|l| *l == "---"), "front matter is never closed");
+    assert!(close < 40, "front matter runs to line {close}: is a closing --- missing?");
 }
 
 #[test]
