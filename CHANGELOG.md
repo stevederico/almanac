@@ -1,3 +1,9 @@
+0.18.0
+
+  Teach skill backups
+  Add backup trigger
+  Test script exists
+
 0.17.0
 
   Add export puller

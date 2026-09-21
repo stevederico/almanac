@@ -28,6 +28,12 @@ fn documents_every_resource_the_api_serves() {
             "the skill does not show how to use {kind}"
         );
     }
+    // The backup it tells an agent to run must exist and be runnable.
+    assert!(text.contains("scripts/pull-export"), "the skill never mentions the backup script");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/pull-export");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(&script).expect("scripts/pull-export exists").permissions().mode();
+    assert!(mode & 0o111 != 0, "scripts/pull-export is not executable");
     // The rules an agent trips over.
     for word in ["User-Agent", "PUT", "429", "shown once"] {
         assert!(text.contains(word), "the skill never mentions {word}");

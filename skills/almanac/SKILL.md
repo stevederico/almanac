@@ -3,8 +3,9 @@ name: almanac
 description: >
   Hosted agent-first calendar, todos and notes on one key. Use when creating a
   calendar, adding or moving an event, adding or finishing a todo, saving or
-  searching a note, exporting, or when he says almanac, "put this on my
-  calendar", "add an event", "add a todo", "remind me", or "save a note".
+  searching a note, exporting or backing up, or when he says almanac, "put
+  this on my calendar", "add an event", "add a todo", "remind me", "save a
+  note", or "back up my calendar".
 ---
 
 # almanac
@@ -65,6 +66,8 @@ curl -sS -A "Claude-Agent" "$BASE/v1/c/$ID/notes?q=ideas&tag=work" -H "$AUTH"
 ## Export and feeds
 
 `GET $BASE/v1/c/$ID/export?format=json|md` returns everything (events, todos, notes with bodies) with no secrets. 10 per hour.
+
+Back up: run `~/Projects/almanac/scripts/pull-export`. It saves a private copy of the export in `~/.local/share/almanac-backups` (keeps the newest 30) and prints one line with the counts. Use it when asked to back up, and before anything risky. Never paste a backup's contents: it holds his notes. It reads the key itself. Scheduling it (a systemd timer, see `docs/DEPLOY.md`) is his call: do not install it unless asked.
 
 `GET $BASE/v1/c/$ID` lists the calendar's feed URLs (events, todos, notes). Those URLs carry read tokens: give them out only when asked. The events feed is already subscribed in Calendar.app. The todos (VTODO `.ics`) and notes (Atom) feeds are not subscribed anywhere yet.
 
