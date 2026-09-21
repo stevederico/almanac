@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Pull a full export of the default calendar into a private folder, keep the newest N.
+
+This is the backup that survives losing the Railway volume: the service's own
+copies and Railway's volume backups both live and die with that volume, and
+Railway's need the Pro plan. The export holds every event, todo and note (with
+bodies), so it is enough to rebuild from. It carries no keys or feed tokens.
+
+Reads the key from ~/.config/almanac/hosted-calendars.json (first entry, like
+the skill). Never prints or logs it.
+
+  ALMANAC_BASE         default https://almanac.dottie.ai
+  ALMANAC_CREDS        default ~/.config/almanac/hosted-calendars.json
+  ALMANAC_BACKUP_DIR   default ~/.local/share/almanac-backups
+  ALMANAC_BACKUP_KEEP  default 30
+
+Exit status is non-zero on any failure and nothing already saved is touched, so
+a scheduled run can be checked with `systemctl --user status` or a mail on
+failure. Exports are limited to 10 per hour per calendar; once a day is plenty.
+"""
+import datetime
+import json
+import os
+import pathlib
+import sys
+import urllib.error
+import urllib.request
+
+
+def fail(message):
+    print(f"pull-export: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def main():
+    base = os.environ.get("ALMANAC_BASE", "https://almanac.dottie.ai").rstrip("/")
+    creds = pathlib.Path(
+        os.environ.get("ALMANAC_CREDS", "~/.config/almanac/hosted-calendars.json")
+    ).expanduser()
+    dest = pathlib.Path(
+        os.environ.get("ALMANAC_BACKUP_DIR", "~/.local/share/almanac-backups")
+    ).expanduser()
+    try:
+        keep = max(1, int(os.environ.get("ALMANAC_BACKUP_KEEP", "30")))
+    except ValueError:
+        fail("ALMANAC_BACKUP_KEEP must be a whole number")
+
+    try:
+        entry = json.loads(creds.read_text())[0]
+        cal_id, key = entry["id"], entry["key"]
+    except (OSError, ValueError, IndexError, KeyError, TypeError):
+        fail(f"could not read a calendar id and key from {creds}")
+
+    request = urllib.request.Request(
+        f"{base}/v1/c/{cal_id}/export?format=json",
+        # A real User-Agent: the host answers 403 to an empty or default one.
+        headers={"Authorization": f"Bearer {key}", "User-Agent": "almanac-backup/1"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = response.read()
+    except urllib.error.HTTPError as e:
+        fail(f"the server answered {e.code}")
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        fail(f"could not reach {base}: {getattr(e, 'reason', e)}")
+
+    # Refuse to save anything that is not a whole export: a truncated or
+    # error body must not push a good backup out of the newest N.
+    try:
+        data = json.loads(body)
+        counts = {name: len(data[name]) for name in ("events", "todos", "notes")}
+    except (ValueError, KeyError, TypeError):
+        fail("the response was not a complete export, nothing saved")
+
+    dest.mkdir(parents=True, exist_ok=True)
+    os.chmod(dest, 0o700)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    name = f"almanac-{cal_id}-{stamp}.json"
+    tmp = dest / f".{name}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(body)
+    os.replace(tmp, dest / name)
+
+    saved = sorted(dest.glob(f"almanac-{cal_id}-*.json"))
+    for old in saved[:-keep]:
+        old.unlink()
+    print(
+        f"saved {name}: {counts['events']} events, {counts['todos']} todos, "
+        f"{counts['notes']} notes, {len(body)} bytes; keeping {min(len(saved), keep)}"
+    )
+
+
+if __name__ == "__main__":
+    main()

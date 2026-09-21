@@ -17,7 +17,20 @@ iPhone needs a reachable hostname (Tailscale). Do not bind `0.0.0.0` unless you 
 
 The service copies its own database every `BACKUP_INTERVAL_HOURS` (default 6) into `BACKUP_DIR` (default `backups/` beside the database) and keeps the newest `BACKUP_KEEP` (default 7). Set the interval to `0` to turn it off.
 
-Those copies live on the same volume as the database. They cover a bad deploy or a corrupted file, not losing the volume. Also enable the host's own volume backups (on Railway, in the dashboard), or pull `GET /v1/c/{id}/export` on a schedule.
+Those copies live on the same volume as the database. They cover a bad deploy or a corrupted file, not losing the volume.
+
+Railway's own volume backups need the Pro plan, and Railway deletes them with the volume anyway, so they would not cover losing it either. What does survive is a copy on another machine. `scripts/pull-export` fetches `GET /v1/c/{id}/export` (every event, todo and note body, no keys) into `~/.local/share/almanac-backups` (mode 700, files 600) and keeps the newest 30. It reads the key from `~/.config/almanac/hosted-calendars.json` and never prints it. Run it by hand, or once a day with the systemd user timer:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp scripts/systemd/almanac-backup.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now almanac-backup.timer
+systemctl --user list-timers almanac-backup     # next run
+journalctl --user -u almanac-backup -n 5        # last result
+```
+
+Set `ALMANAC_BACKUP_DIR` and `ALMANAC_BACKUP_KEEP` to change where and how many. Keep that folder out of anything synced or committed: it holds your notes.
 
 Before a migration that rewrites rows, the service copies the file to `<db>.pre-<version>` and never overwrites an earlier copy.
 

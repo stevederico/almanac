@@ -1,0 +1,11 @@
+[Unit]
+Description=Pull an Almanac export every day
+
+[Timer]
+OnCalendar=daily
+# Run a missed one when the machine is next on.
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

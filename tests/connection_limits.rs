@@ -302,3 +302,109 @@ fn scrub_legacy_keys_blanks_plaintext_on_boot_and_keeps_keys_working() {
     let _ = std::fs::remove_file(&db);
     let _ = std::fs::remove_file(&snapshot);
 }
+
+#[test]
+fn pull_export_saves_a_private_copy_prunes_old_ones_and_never_saves_a_bad_response() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    if Command::new("python3").arg("--version").output().is_err() {
+        return; // The script needs python3; nothing to test without it.
+    }
+    let db = std::env::temp_dir().join(format!("almanac-pull-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&db);
+    let (_server, port) = start_server(db.to_str().unwrap());
+
+    // A calendar with one note in it.
+    let created = exchange(
+        port,
+        b"POST /calendars HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+    );
+    let body = created.split("\r\n\r\n").nth(1).unwrap_or_default();
+    let field = |name: &str| -> String {
+        let after = body.split(&format!("\"{name}\":\"")).nth(1).unwrap_or_default();
+        after.split('"').next().unwrap_or_default().to_string()
+    };
+    let (id, key) = (field("id"), field("key"));
+    assert!(id.starts_with("cal_") && !key.is_empty(), "{created}");
+    let note = r#"{"title":"Backed up","body":"still here"}"#;
+    let put = exchange(
+        port,
+        format!(
+            "PUT /v1/c/{id}/notes/n1 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {key}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{note}",
+            note.len()
+        )
+        .as_bytes(),
+    );
+    assert!(put.starts_with("HTTP/1.1 201"), "{put}");
+
+    let work = std::env::temp_dir().join(format!("almanac-pull-work-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let creds = work.join("hosted-calendars.json");
+    let write_creds = |key: &str| {
+        std::fs::write(&creds, format!(r#"[{{"id":"{id}","name":"t","key":"{key}"}}]"#)).unwrap()
+    };
+    let dest = work.join("backups");
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/pull-export");
+    let run = || {
+        Command::new("python3")
+            .arg(&script)
+            .env("ALMANAC_BASE", format!("http://127.0.0.1:{port}"))
+            .env("ALMANAC_CREDS", &creds)
+            .env("ALMANAC_BACKUP_DIR", &dest)
+            .env("ALMANAC_BACKUP_KEEP", "2")
+            .output()
+            .unwrap()
+    };
+    let files = || {
+        let mut v: Vec<_> = std::fs::read_dir(&dest)
+            .map(|d| d.map(|e| e.unwrap().path()).collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    };
+
+    write_creds(&key);
+    let out = run();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let saved = files();
+    assert_eq!(saved.len(), 1);
+    let text = std::fs::read_to_string(&saved[0]).unwrap();
+    assert!(text.contains("Backed up") && text.contains("still here"), "the note is in the export");
+    assert!(!text.contains(&key), "a backup must never hold the key");
+    assert_eq!(std::fs::metadata(&saved[0]).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777, 0o700);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 notes"));
+
+    // Keep the newest two.
+    assert!(run().status.success());
+    assert!(run().status.success());
+    let kept = files();
+    assert_eq!(kept.len(), 2, "{kept:?}");
+    assert!(!kept.contains(&saved[0]), "the oldest copy should have been pruned");
+
+    // A wrong key is refused, says so without echoing the key, and touches nothing.
+    write_creds("not-the-key");
+    let bad = run();
+    assert!(!bad.status.success());
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(stderr.contains("401"), "{stderr}");
+    assert!(!stderr.contains("not-the-key") && !stderr.contains(&key), "the key was printed");
+    assert_eq!(files(), kept, "a failed run must leave the saved copies alone");
+
+    // A server that is not there fails cleanly too.
+    write_creds(&key);
+    let down = Command::new("python3")
+        .arg(&script)
+        .env("ALMANAC_BASE", "http://127.0.0.1:1")
+        .env("ALMANAC_CREDS", &creds)
+        .env("ALMANAC_BACKUP_DIR", &dest)
+        .output()
+        .unwrap();
+    assert!(!down.status.success());
+    assert_eq!(files(), kept);
+
+    let _ = std::fs::remove_dir_all(&work);
+    let _ = std::fs::remove_file(&db);
+}

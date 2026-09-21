@@ -1,0 +1,6 @@
+[Unit]
+Description=Pull an Almanac export
+
+[Service]
+Type=oneshot
+ExecStart=%h/Projects/almanac/scripts/pull-export
