@@ -827,3 +827,44 @@ fn head_on_a_feed_matches_get_without_the_body() {
         assert_eq!(status, 404, "{method}");
     }
 }
+
+// ---- create input ------------------------------------------------------------
+
+#[test]
+fn bad_create_bodies_are_rejected_and_create_nothing() {
+    let mut app = test_app();
+    app.limits.creates_per_client_hour = 1000;
+    let post = |ctype: &str, body: &[u8]| {
+        send(
+            &app,
+            Request::new("POST", "/calendars")
+                .with_header("content-type", ctype)
+                .with_header("accept", "application/json")
+                .with_body(body.to_vec()),
+        )
+        .0
+    };
+    let json = "application/json";
+    for bad in [
+        &b"{not json"[..],
+        b"[",
+        b"[]",
+        b"\"just a string\"",
+        b"42",
+        b"{\"name\": 5}",
+        b"{\"name\": [\"a\"]}",
+        b"\xff\xfe",
+    ] {
+        assert_eq!(post(json, bad), 400, "{:?}", String::from_utf8_lossy(bad));
+    }
+    assert_eq!(app.db.lock().unwrap().count_calendars().unwrap(), 1, "only home");
+
+    // Still fine: nothing at all, blanks, an object, a null name, a form.
+    assert_eq!(post(json, b""), 201);
+    assert_eq!(post(json, b"  \n"), 201);
+    assert_eq!(post(json, b"{}"), 201);
+    assert_eq!(post(json, b"{\"name\": null}"), 201);
+    assert_eq!(post(json, b"{\"name\": \"Roadmap\"}"), 201);
+    assert_eq!(post("application/x-www-form-urlencoded", b"name=Trip"), 201);
+    assert_eq!(post("text/plain", b"whatever"), 201);
+}

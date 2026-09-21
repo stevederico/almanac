@@ -1,3 +1,10 @@
+0.7.0
+
+  Reject bad JSON
+  Reject non-object
+  Require string name
+  Add create test
+
 0.6.0
 
   Sweep on timer

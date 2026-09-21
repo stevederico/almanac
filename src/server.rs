@@ -148,7 +148,10 @@ fn create_calendar(state: &AppState, req: &Request) -> Response {
         return too_many(retry);
     }
     let ctype = req.header("content-type");
-    let name = parse_calendar_name(ctype, &req.body);
+    let name = match parse_calendar_name(ctype, &req.body) {
+        Ok(name) => name,
+        Err(e) => return json_err(400, &e),
+    };
     let db = lock_db(state);
     match db.count_calendars() {
         Ok(n) if n >= limits.max_calendars => return json_err(503, "calendar limit reached"),
@@ -167,13 +170,26 @@ fn create_calendar(state: &AppState, req: &Request) -> Response {
     json_response(201, &stringify(&json_calendar(&saved, &base)))
 }
 
-fn parse_calendar_name(ctype: &str, body: &[u8]) -> Option<String> {
+/// The requested name, if any. An empty body still means "make me a default
+/// calendar", but a JSON body that is present and wrong is an error: quietly
+/// ignoring it would create a calendar the caller did not ask for.
+fn parse_calendar_name(ctype: &str, body: &[u8]) -> Result<Option<String>, String> {
     if ctype.contains("application/json") {
-        let value = parse_json(std::str::from_utf8(body).ok()?).ok()?;
-        return value
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        let text = std::str::from_utf8(body).map_err(|_| "body must be valid JSON")?;
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        let value = parse_json(text).map_err(|_| "body must be valid JSON")?;
+        if !matches!(value, Value::Object(_)) {
+            return Err("body must be an object".into());
+        }
+        return match value.get("name") {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => v
+                .as_str()
+                .map(|s| Some(s.to_string()))
+                .ok_or_else(|| "name must be a string".to_string()),
+        };
     }
     if ctype.contains("application/x-www-form-urlencoded") {
         let text = String::from_utf8_lossy(body);
@@ -182,11 +198,11 @@ fn parse_calendar_name(ctype: &str, body: &[u8]) -> Option<String> {
             let key = it.next().unwrap_or("");
             let val = it.next().unwrap_or("");
             if key == "name" {
-                return Some(urlencoding_decode(val));
+                return Ok(Some(urlencoding_decode(val)));
             }
         }
     }
-    None
+    Ok(None)
 }
 
 fn urlencoding_decode(value: &str) -> String {
