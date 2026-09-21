@@ -47,13 +47,14 @@ On macOS, `./bin/almanac start` builds a release binary, copies it to `~/.local/
 | `AGENT_KEY` | Bearer token for the home calendar |
 | `CAL_NAME` | Title in Calendar (default `Almanac`) |
 | `DB_PATH` | SQLite file |
+| `DB_KEY` | Passphrase for that file. Unset leaves it plaintext. `openssl rand -hex 32` |
 | `PUBLIC_BASE` | Origin used in feed URLs when set |
 
 Other caps and backup settings are in `.env.example`.
 
 ## Stack
 
-Rust 2021, no crates. System SQLite (`libsqlite3`).
+Rust 2021, no crates. System SQLCipher (`libsqlcipher`), which is SQLite with the file encrypted when `DB_KEY` is set.
 
 ```
 agent  --PUT /v1/c/:id/events/:uid-->  SQLite  --GET /feed/:token.ics-->  Calendar

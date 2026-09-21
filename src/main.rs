@@ -23,7 +23,9 @@ fn main() {
     }
     // yagni: rustls for TLS_KEY/TLS_CERT; add if loopback HTTPS comes back
     let cfg = read_config_from_os();
-    let db = Db::open(&cfg.db_path).unwrap_or_else(|e| {
+    let db_key = cfg.db_key.as_str();
+    let db_key = (!db_key.is_empty()).then_some(db_key);
+    let db = Db::open_with(&cfg.db_path, db_key).unwrap_or_else(|e| {
         eprintln!("db: {e}");
         std::process::exit(1);
     });
@@ -72,6 +74,7 @@ fn main() {
     spawn_backups(
         Path::new(&cfg.db_path).to_path_buf(),
         BackupConfig::from_env(&cfg.db_path, |k| std::env::var(k).ok()),
+        db_key.map(str::to_string),
     );
     let public_base = std::env::var("PUBLIC_BASE").unwrap_or_default();
     let mut state = AppState::new(db, public_base);

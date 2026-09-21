@@ -11,10 +11,20 @@ Prod answers `403` to an empty or default-curl User-Agent. Check with `-A "Mozil
 Optional loopback. The server binds `localhost` (`127.0.0.1` and `::1`). Other devices cannot reach it. Do not bind `0.0.0.0` unless you mean to.
 
 1. `cp .env.example .env` and set `FEED_TOKEN` + `AGENT_KEY` (`openssl rand -hex 24`).
-2. Rust toolchain (`cargo`) on PATH, and system `libsqlite3`.
+2. Rust toolchain (`cargo`) on PATH, and system `libsqlcipher` (SQLCipher 4).
 3. `cargo run --release`. Health: `http://localhost:18788/health`.
 
 On macOS, `./bin/almanac start` builds the binary, copies it to `~/.local/share/almanac` (launchd cannot read Desktop), and bootstraps the LaunchAgent `com.stevederico.almanac`. `./bin/almanac url` prints the subscribe URL. Logs: `~/Library/Logs/almanac.out` and `almanac.err`. The script defaults `ALMANAC_ROOT` to `~/Desktop/projects/almanac`; set it when the checkout is somewhere else. It always binds `localhost`.
+
+## Database encryption
+
+`DB_KEY` is the passphrase for the SQLite file (`openssl rand -hex 32`). It is not stored in the file. With it set, a stolen `calendar.db` or an on-volume backup does not show event text, todo titles, note bodies, names, or feed tokens. Unset, the file stays plaintext, which is how tests and an existing deploy behave until the key is set.
+
+The running process can still read the file, and so can anyone with the write key or a feed URL. Someone who also has `DB_KEY` can decrypt the file. `scripts/pull-export` stays a plaintext JSON copy on the machine that runs it.
+
+On the next boot with `DB_KEY` set, a plaintext file is encrypted and the plaintext copy is deleted. A wrong key, or an encrypted file with no key, refuses to start and does not overwrite the file.
+
+Prod, when deploying this: set `DB_KEY` on the bixby `almanac` service first, then deploy, then check `/health` and that the volume file does not start with `SQLite format 3`.
 
 ## Backups (Railway or any host)
 

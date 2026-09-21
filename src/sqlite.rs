@@ -19,9 +19,10 @@ struct sqlite3_stmt {
     _private: [u8; 0],
 }
 
-#[link(name = "sqlite3")]
+#[link(name = "sqlcipher")]
 extern "C" {
     fn sqlite3_open(filename: *const c_char, pp_db: *mut *mut sqlite3) -> c_int;
+    fn sqlite3_key(db: *mut sqlite3, key: *const c_void, n_key: c_int) -> c_int;
     fn sqlite3_close(db: *mut sqlite3) -> c_int;
     fn sqlite3_exec(
         db: *mut sqlite3,
@@ -76,6 +77,12 @@ impl Drop for Connection {
 
 impl Connection {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::open_keyed(path, None)
+    }
+
+    /// Open `path`. When `key` is set, `sqlite3_key` is the first call after
+    /// open. The key is a passphrase; it is not written into SQL and not logged.
+    pub fn open_keyed(path: impl AsRef<Path>, key: Option<&str>) -> Result<Self, String> {
         let path = path.as_ref().to_string_lossy();
         let c_path = CString::new(path.as_ref()).map_err(|_| "db path")?;
         let mut db = ptr::null_mut();
@@ -84,6 +91,16 @@ impl Connection {
             let msg = errmsg(db);
             unsafe { sqlite3_close(db) };
             return Err(msg);
+        }
+        if let Some(key) = key.filter(|k| !k.is_empty()) {
+            let rc = unsafe {
+                sqlite3_key(db, key.as_ptr() as *const c_void, key.len() as c_int)
+            };
+            if rc != SQLITE_OK {
+                let msg = errmsg(db);
+                unsafe { sqlite3_close(db) };
+                return Err(msg);
+            }
         }
         Ok(Self { db })
     }

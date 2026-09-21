@@ -2,9 +2,9 @@
 //!
 //! One SQLite file holds every calendar, so it is worth a copy the service
 //! makes itself. `VACUUM INTO` writes a consistent snapshot through a second
-//! connection while the server keeps running. These land on the same volume, so
-//! they cover a bad deploy or a corrupted file, not losing the volume: pair
-//! them with the host's own volume backups.
+//! connection while the server keeps running. The copy uses the same `DB_KEY`,
+//! so an encrypted database stays encrypted. These land on the same volume, so
+//! they cover a bad deploy or a corrupted file, not losing the volume.
 
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -56,11 +56,16 @@ impl BackupConfig {
 
 /// Write one snapshot into `dir` and prune all but the newest `keep`.
 /// Returns the new file's path.
-pub fn run_once(db_path: &Path, dir: &Path, keep: usize) -> Result<PathBuf, String> {
+pub fn run_once(
+    db_path: &Path,
+    dir: &Path,
+    keep: usize,
+    key: Option<&str>,
+) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let stamp = now_iso().replace(['-', ':', '.'], "");
     let target = dir.join(format!("{PREFIX}{stamp}{SUFFIX}"));
-    let conn = Connection::open(db_path)?;
+    let conn = Connection::open_keyed(db_path, key)?;
     conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
     let literal = target.to_string_lossy().replace('\'', "''");
     conn.execute_batch(&format!("VACUUM INTO '{literal}'"))?;
@@ -86,14 +91,14 @@ fn prune(dir: &Path, keep: usize) -> Result<(), String> {
 
 /// Run `run_once` on a timer for the life of the process. Failures are logged,
 /// never fatal: a full disk must not take the calendar down with it.
-pub fn spawn(db_path: PathBuf, cfg: BackupConfig) {
+pub fn spawn(db_path: PathBuf, cfg: BackupConfig, key: Option<String>) {
     if cfg.interval_hours == 0 {
         return;
     }
     thread::spawn(move || {
         thread::sleep(FIRST_DELAY);
         loop {
-            match run_once(&db_path, &cfg.dir, cfg.keep) {
+            match run_once(&db_path, &cfg.dir, cfg.keep, key.as_deref()) {
                 Ok(path) => println!(
                     "{{\"t\":\"{}\",\"msg\":\"backup\",\"file\":\"{}\"}}",
                     now_iso(),
@@ -125,7 +130,7 @@ mod tests {
         let db = Db::open(&db_path).unwrap();
         let (cal, _) = db.create_calendar(Some("Kept"), None, None, None).unwrap();
 
-        let file = run_once(&db_path, &dir.join("backups"), 7).unwrap();
+        let file = run_once(&db_path, &dir.join("backups"), 7, None).unwrap();
         let copy = Db::open(&file).unwrap();
         assert_eq!(copy.get_calendar(&cal.id).unwrap().unwrap().name, "Kept");
     }
@@ -138,7 +143,7 @@ mod tests {
         let backups = dir.join("backups");
         let mut made = Vec::new();
         for _ in 0..5 {
-            made.push(run_once(&db_path, &backups, 3).unwrap());
+            made.push(run_once(&db_path, &backups, 3, None).unwrap());
             // Names carry milliseconds, so stay apart from the previous one.
             thread::sleep(Duration::from_millis(3));
         }
@@ -163,7 +168,7 @@ mod tests {
         let backups = dir.join("backups");
         std::fs::create_dir_all(&backups).unwrap();
         std::fs::write(backups.join("notes.txt"), "mine").unwrap();
-        run_once(&db_path, &backups, 1).unwrap();
+        run_once(&db_path, &backups, 1, None).unwrap();
         assert!(backups.join("notes.txt").exists());
     }
 
@@ -172,8 +177,39 @@ mod tests {
         let dir = scratch();
         let db_path = dir.join("calendar.db");
         let _db = Db::open(&db_path).unwrap();
-        let file = run_once(&db_path, &dir.join("it's here"), 7).unwrap();
+        let file = run_once(&db_path, &dir.join("it's here"), 7, None).unwrap();
         assert!(file.exists());
+    }
+
+    #[test]
+    fn an_encrypted_backup_stays_encrypted() {
+        let dir = scratch();
+        let db_path = dir.join("calendar.db");
+        let key = "backup-key";
+        let body = "note-body-plaintext-sentinel-9f3a";
+        let db = Db::open_with(&db_path, Some(key)).unwrap();
+        let (cal, _) = db.create_calendar(Some("Kept"), None, None, None).unwrap();
+        db.upsert_note(
+            &cal.id,
+            Some("n"),
+            &crate::notes::NoteFields {
+                uid: None,
+                title: Some("T".into()),
+                body: Some(body.into()),
+                tags: None,
+                pinned: None,
+            },
+        )
+        .unwrap();
+        drop(db);
+
+        let file = run_once(&db_path, &dir.join("backups"), 7, Some(key)).unwrap();
+        let raw = std::fs::read(&file).unwrap();
+        assert!(!raw.starts_with(b"SQLite format 3"));
+        assert!(!raw.windows(body.len()).any(|w| w == body.as_bytes()));
+        let copy = Db::open_with(&file, Some(key)).unwrap();
+        assert_eq!(copy.get_calendar(&cal.id).unwrap().unwrap().name, "Kept");
+        assert!(Db::open(&file).is_err());
     }
 
     #[test]

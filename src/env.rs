@@ -12,6 +12,8 @@ pub struct Config {
     pub agent_key: String,
     pub tls_key: String,
     pub tls_cert: String,
+    /// Passphrase for the database file. Empty leaves the file plaintext.
+    pub db_key: String,
 }
 
 const DEFAULT_PORT: u16 = 18788;
@@ -101,6 +103,10 @@ pub fn read_config(env: &HashMap<String, String>) -> Config {
         agent_key: env.get("AGENT_KEY").cloned().unwrap_or_default(),
         tls_key: env.get("TLS_KEY").cloned().unwrap_or_default(),
         tls_cert: env.get("TLS_CERT").cloned().unwrap_or_default(),
+        db_key: env
+            .get("DB_KEY")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default(),
     }
 }
 
@@ -114,6 +120,7 @@ pub fn read_config_from_os() -> Config {
         "AGENT_KEY",
         "TLS_KEY",
         "TLS_CERT",
+        "DB_KEY",
     ];
     let mut map = HashMap::new();
     for key in keys {
@@ -140,6 +147,7 @@ mod tests {
         assert_eq!(cfg.cal_name, "Almanac");
         assert_eq!(cfg.tls_key, "");
         assert_eq!(cfg.tls_cert, "");
+        assert_eq!(cfg.db_key, "");
     }
 
     #[test]

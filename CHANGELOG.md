@@ -1,3 +1,9 @@
+0.23.0
+
+  Encrypt database file
+  Migrate plaintext once
+  Key the volume copies
+
 0.22.0
 
   Add calendar delete

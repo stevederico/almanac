@@ -98,13 +98,157 @@ pub struct Db {
     pub(crate) conn: Connection,
 }
 
+/// First 16 bytes of an unencrypted SQLite file. SQLCipher replaces them.
+const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileKind {
+    Missing,
+    Plaintext,
+    Encrypted,
+}
+
+fn file_kind(path: &Path) -> FileKind {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return FileKind::Missing,
+    };
+    let mut buf = [0u8; 16];
+    use std::io::Read;
+    match file.read(&mut buf) {
+        Ok(0) => FileKind::Missing,
+        Ok(16) if &buf == SQLITE_HEADER => FileKind::Plaintext,
+        Ok(_) => FileKind::Encrypted,
+        Err(_) => FileKind::Encrypted,
+    }
+}
+
+fn sibling(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".");
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
+fn ping_conn(conn: &Connection) -> Result<(), String> {
+    conn.query_row("SELECT 1", &[], |row| row.i64(0))?
+        .map(|_| ())
+        .ok_or_else(|| "db did not answer".to_string())
+}
+
+fn calendar_count(conn: &Connection) -> Result<i64, String> {
+    let tables = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'calendars'",
+            &[],
+            |row| row.i64(0),
+        )?
+        .unwrap_or(0);
+    if tables == 0 {
+        return Ok(0);
+    }
+    Ok(conn
+        .query_row("SELECT COUNT(*) FROM calendars", &[], |row| row.i64(0))?
+        .unwrap_or(0))
+}
+
+/// Quote a SQL string literal. Used for the export target path and the
+/// passphrase. The statement is not logged.
+fn sql_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Export a plaintext file into an encrypted one, and swap it into place only
+/// after the copy answers and still has the same calendars. A failure leaves
+/// the original file where it was. The plaintext copy is deleted in this same
+/// call. `sqlite3_rekey` cannot encrypt a file that was never keyed.
+fn encrypt_file(path: &Path, key: &str) -> Result<(), String> {
+    let dest = sibling(path, "encrypting");
+    let plain_tmp = sibling(path, "plain-tmp");
+    let _ = std::fs::remove_file(&dest);
+    let fail = |msg: String| {
+        let _ = std::fs::remove_file(&dest);
+        msg
+    };
+    let before = {
+        let conn = Connection::open(path)?;
+        conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        let before = calendar_count(&conn)?;
+        let attach = format!(
+            "ATTACH DATABASE {} AS encrypted KEY {}",
+            sql_literal(&dest.to_string_lossy()),
+            sql_literal(key)
+        );
+        if let Err(e) = conn.execute_batch(&attach) {
+            return Err(fail(format!("encrypt db: {e}")));
+        }
+        if let Err(e) = conn.execute_batch("SELECT sqlcipher_export('encrypted')") {
+            return Err(fail(format!("encrypt db: {e}")));
+        }
+        if let Err(e) = conn.execute_batch("DETACH DATABASE encrypted") {
+            return Err(fail(format!("encrypt db: {e}")));
+        }
+        before
+    };
+    {
+        let conn = Connection::open_keyed(&dest, Some(key))?;
+        if ping_conn(&conn).is_err() {
+            return Err(fail("database key was rejected".into()));
+        }
+        match calendar_count(&conn) {
+            Ok(after) if after == before => {}
+            Ok(_) => return Err(fail("encrypt db: calendar count changed".into())),
+            Err(e) => return Err(fail(e)),
+        }
+    }
+    let _ = std::fs::remove_file(&plain_tmp);
+    if let Err(e) = std::fs::rename(path, &plain_tmp) {
+        let _ = std::fs::remove_file(&dest);
+        return Err(format!("move db: {e}"));
+    }
+    if let Err(e) = std::fs::rename(&dest, path) {
+        let _ = std::fs::rename(&plain_tmp, path);
+        return Err(format!("replace db: {e}"));
+    }
+    std::fs::remove_file(&plain_tmp).map_err(|e| format!("remove plaintext db: {e}"))?;
+    Ok(())
+}
+
 impl Db {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::open_with(path, None)
+    }
+
+    /// `key` is the `DB_KEY` passphrase. Unset or empty keeps a plaintext file.
+    /// A plaintext file is encrypted once, then the plaintext copy is deleted.
+    /// A keyed file without the passphrase, or with the wrong one, is refused
+    /// before any write.
+    pub fn open_with(path: impl AsRef<Path>, key: Option<&str>) -> Result<Self, String> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
         }
-        let conn = Connection::open(path)?;
+        let key = key.filter(|k| !k.is_empty());
+        let kind = file_kind(path);
+        if kind == FileKind::Plaintext {
+            if let Some(key) = key {
+                encrypt_file(path, key)?;
+            }
+        }
+        if kind == FileKind::Encrypted && key.is_none() {
+            return Err("database is encrypted; set DB_KEY".into());
+        }
+        let conn = Connection::open_keyed(path, key)?;
+        // A read, before schema writes. A wrong key fails here and the file
+        // stays as it was. A new file has nothing to read yet.
+        if key.is_some() && kind != FileKind::Missing {
+            if ping_conn(&conn).is_err() {
+                return Err("database key was rejected".into());
+            }
+        }
         // Wait for another connection's write lock instead of failing at once.
         conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
         conn.execute_batch(
@@ -1977,5 +2121,81 @@ mod tests {
             .ensure_home_calendar(&other.feed_token, "key-1", "Home")
             .is_err());
         assert_eq!(db.get_calendar("home").unwrap().unwrap().feed_token, "feed-1");
+    }
+
+    const DB_KEY: &str = "test-db-key";
+    const NOTE_BODY: &str = "note-body-plaintext-sentinel-9f3a";
+
+    fn enc_path() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("almanac-enc-{}", hex_encode(&random_bytes(8))));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("calendar.db")
+    }
+
+    fn put_secret(db: &Db, cal: &str) {
+        db.upsert_note(
+            cal,
+            Some("n"),
+            &crate::notes::NoteFields {
+                uid: None,
+                title: Some("T".into()),
+                body: Some(NOTE_BODY.into()),
+                tags: None,
+                pinned: None,
+            },
+        )
+        .unwrap();
+    }
+
+    fn raw_hides_note(path: &Path) {
+        let bytes = std::fs::read(path).unwrap();
+        assert!(
+            !bytes.starts_with(b"SQLite format 3"),
+            "the file is still plaintext"
+        );
+        assert!(
+            !bytes.windows(NOTE_BODY.len()).any(|w| w == NOTE_BODY.as_bytes()),
+            "the note body is in the file"
+        );
+    }
+
+    #[test]
+    fn a_keyed_database_hides_the_note_body_and_rejects_a_wrong_key() {
+        let path = enc_path();
+        let db = Db::open_with(&path, Some(DB_KEY)).unwrap();
+        let (cal, _) = db.create_calendar(Some("Hidden"), None, None, None).unwrap();
+        let id = cal.id.clone();
+        put_secret(&db, &id);
+        drop(db);
+        raw_hides_note(&path);
+
+        let db = Db::open_with(&path, Some(DB_KEY)).unwrap();
+        assert_eq!(db.get_note(&id, "n").unwrap().unwrap().body, NOTE_BODY);
+        drop(db);
+
+        let before = std::fs::read(&path).unwrap();
+        assert!(Db::open(&path).is_err());
+        assert!(Db::open_with(&path, Some("other-key")).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_plaintext_database_is_encrypted_and_keeps_its_rows() {
+        let path = enc_path();
+        let db = Db::open(&path).unwrap();
+        let (cal, _) = db.create_calendar(Some("Kept"), None, None, None).unwrap();
+        let id = cal.id.clone();
+        put_secret(&db, &id);
+        drop(db);
+        assert!(std::fs::read(&path).unwrap().starts_with(b"SQLite format 3"));
+
+        let db = Db::open_with(&path, Some(DB_KEY)).unwrap();
+        assert_eq!(db.get_note(&id, "n").unwrap().unwrap().body, NOTE_BODY);
+        assert_eq!(db.get_calendar(&id).unwrap().unwrap().name, "Kept");
+        drop(db);
+
+        raw_hides_note(&path);
+        assert!(!sibling(&path, "plain-tmp").exists());
+        assert!(!sibling(&path, "encrypting").exists());
     }
 }
