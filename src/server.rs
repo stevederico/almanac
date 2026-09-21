@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use crate::db::{
-    json_calendar, json_event, normalize_recurrence_id, parse_event_input, parse_event_patch,
+    json_calendar, json_calendar_created, json_event, normalize_recurrence_id, parse_event_input, parse_event_patch,
     parse_override_input, parse_recurrence_id, CalendarRow, Db,
 };
 use crate::http::{html_response, json_response, text_response, Request, Response};
@@ -10,6 +10,7 @@ use crate::ics::{render_calendar, IcsEvent, IcsOverride};
 use crate::json::{parse as parse_json, stringify, Value};
 use crate::landing::{html_created, html_home, json_index, llms_txt};
 use crate::limits::{client_id, Limiter, Limits, HOUR_MS, MINUTE_MS};
+use crate::sha256::sha256_hex;
 use crate::time::now_iso;
 
 const OG_PNG: &[u8] = include_bytes!("../public/og.png");
@@ -158,16 +159,16 @@ fn create_calendar(state: &AppState, req: &Request) -> Response {
         Ok(_) => {}
         Err(e) => return json_err(500, &e),
     }
-    let saved = match db.create_calendar(name.as_deref(), None, None, None) {
-        Ok(row) => row,
+    let (saved, key) = match db.create_calendar(name.as_deref(), None, None, None) {
+        Ok(created) => created,
         Err(e) => return json_err(400, &e),
     };
     drop(db);
     let base = request_base(req, &state.public_base);
     if wants_html(req) || ctype.contains("application/x-www-form-urlencoded") {
-        return html_response(201, html_created(&saved, &base));
+        return html_response(201, html_created(&saved, &key, &base));
     }
-    json_response(201, &stringify(&json_calendar(&saved, &base)))
+    json_response(201, &stringify(&json_calendar_created(&saved, &key, &base)))
 }
 
 /// The requested name, if any. An empty body still means "make me a default
@@ -566,7 +567,9 @@ fn parse_body(req: &Request) -> Result<Value, String> {
 
 fn calendar_auth(db: &Db, id: &str, header: &str) -> Option<CalendarRow> {
     let cal = db.get_calendar(id).ok().flatten()?;
-    if safe_equal(&bearer(header), &cal.agent_key) {
+    // Keys are stored hashed; compare hashes. `safe_equal` refuses an empty
+    // expected value, so a row without a hash can never authenticate.
+    if safe_equal(&sha256_hex(&bearer(header)), &cal.key_hash) {
         Some(cal)
     } else {
         None

@@ -1,3 +1,11 @@
+0.8.0
+
+  Hash keys
+  Add backups
+  Snapshot before migrate
+  Hide key on GET
+  Add SHA-256
+
 0.7.0
 
   Reject bad JSON

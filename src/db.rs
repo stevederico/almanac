@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::ics::next_date;
 use crate::json::Value;
 use crate::rrule::canonicalize;
+use crate::sha256::sha256_hex;
 use crate::sqlite::{Bind, Connection};
 use crate::time::{add_hour, is_ymd, now_iso, parse_instant};
 use crate::tz;
@@ -16,7 +17,8 @@ const EVENT_COLS: &str = "uid, summary, description, location, dtstart, dtend, \
 pub struct CalendarRow {
     pub id: String,
     pub feed_token: String,
-    pub agent_key: String,
+    /// SHA-256 hex of the write key. The key itself is never kept.
+    pub key_hash: String,
     pub name: String,
     pub created_at: String,
 }
@@ -110,10 +112,12 @@ impl Db {
                 id TEXT PRIMARY KEY,
                 feed_token TEXT NOT NULL UNIQUE,
                 agent_key TEXT NOT NULL,
+                key_hash TEXT NOT NULL DEFAULT '',
                 name TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );",
         )?;
+        migrate_calendars(path, &conn)?;
         migrate_events(&conn)?;
         Ok(Self { conn })
     }
@@ -146,7 +150,7 @@ impl Db {
 
     pub fn get_calendar(&self, id: &str) -> Result<Option<CalendarRow>, String> {
         self.conn.query_row(
-            "SELECT id, feed_token, agent_key, name, created_at FROM calendars WHERE id = ?1",
+            "SELECT id, feed_token, key_hash, name, created_at FROM calendars WHERE id = ?1",
             &[Bind::Text(id)],
             row_calendar,
         )
@@ -154,19 +158,21 @@ impl Db {
 
     pub fn get_calendar_by_feed_token(&self, token: &str) -> Result<Option<CalendarRow>, String> {
         self.conn.query_row(
-            "SELECT id, feed_token, agent_key, name, created_at FROM calendars WHERE feed_token = ?1",
+            "SELECT id, feed_token, key_hash, name, created_at FROM calendars WHERE feed_token = ?1",
             &[Bind::Text(token)],
             row_calendar,
         )
     }
 
+    /// Returns the row and the plaintext write key. This is the only moment
+    /// the key exists outside the caller: the row holds its hash.
     pub fn create_calendar(
         &self,
         name: Option<&str>,
         id: Option<&str>,
         feed_token: Option<&str>,
         agent_key: Option<&str>,
-    ) -> Result<CalendarRow, String> {
+    ) -> Result<(CalendarRow, String), String> {
         let name = name.unwrap_or("Almanac").trim();
         let name = if name.is_empty() { "Almanac" } else { name };
         if name.len() > 80 {
@@ -177,19 +183,25 @@ impl Db {
         let now = now_iso();
         let feed = feed_token.map(str::to_string).unwrap_or_else(secret);
         let key = agent_key.map(str::to_string).unwrap_or_else(secret);
+        // `agent_key` is a legacy column, still NOT NULL. It gets a random
+        // throwaway so that rolling back to a build that compares it can never
+        // match an empty `Authorization` header.
         self.conn.execute(
-            "INSERT INTO calendars (id, feed_token, agent_key, name, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO calendars (id, feed_token, agent_key, key_hash, name, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             &[
                 Bind::Text(id),
                 Bind::Text(&feed),
-                Bind::Text(&key),
+                Bind::Text(&secret()),
+                Bind::Text(&sha256_hex(&key)),
                 Bind::Text(name),
                 Bind::Text(&now),
             ],
         )?;
-        self.get_calendar(id)?
-            .ok_or_else(|| "failed to create calendar".into())
+        let row = self
+            .get_calendar(id)?
+            .ok_or_else(|| "failed to create calendar".to_string())?;
+        Ok((row, key))
     }
 
     /// Make the `home` calendar match the environment.
@@ -208,7 +220,8 @@ impl Db {
     ) -> Result<(CalendarRow, Vec<&'static str>), String> {
         if let Some(existing) = self.get_calendar("home")? {
             let mut changed = Vec::new();
-            if existing.agent_key != agent_key {
+            let key_hash = sha256_hex(agent_key);
+            if existing.key_hash != key_hash {
                 changed.push("agent_key");
             }
             if existing.feed_token != feed_token {
@@ -221,10 +234,14 @@ impl Db {
                 return Ok((existing, changed));
             }
             self.conn.execute(
-                "UPDATE calendars SET feed_token = ?1, agent_key = ?2, name = ?3 WHERE id = 'home'",
+                "UPDATE calendars SET feed_token = ?1, agent_key = ?2, key_hash = ?3, name = ?4
+                 WHERE id = 'home'",
                 &[
                     Bind::Text(feed_token),
-                    Bind::Text(agent_key),
+                    // Overwrite the legacy plaintext too: a rotated-away key
+                    // must not linger in the file.
+                    Bind::Text(&secret()),
+                    Bind::Text(&key_hash),
                     Bind::Text(name),
                 ],
             )?;
@@ -236,7 +253,8 @@ impl Db {
         if let Some(by_token) = self.get_calendar_by_feed_token(feed_token)? {
             return Ok((by_token, Vec::new()));
         }
-        let row = self.create_calendar(Some(name), Some("home"), Some(feed_token), Some(agent_key))?;
+        let (row, _) =
+            self.create_calendar(Some(name), Some("home"), Some(feed_token), Some(agent_key))?;
         Ok((row, vec!["created"]))
     }
 
@@ -706,7 +724,7 @@ fn row_calendar(row: &crate::sqlite::Row) -> CalendarRow {
     CalendarRow {
         id: row.text(0),
         feed_token: row.text(1),
-        agent_key: row.text(2),
+        key_hash: row.text(2),
         name: row.text(3),
         created_at: row.text(4),
     }
@@ -789,6 +807,45 @@ fn attach_exceptions(event: &mut EventRow, rows: &[ExceptionRow]) {
 /// table, and a failure between the drop and the rename used to leave the
 /// database with no events table (or a stray `events_new`) and every restart
 /// failing the same way.
+/// Add `key_hash` to a database from before keys were hashed, and fill it from
+/// the plaintext column.
+///
+/// The plaintext stays for now: leaving it lets the previous release still
+/// authenticate, so a bad deploy can be rolled back without locking everyone
+/// out. A later release scrubs it. A copy of the file is taken first.
+fn migrate_calendars(path: &Path, db: &Connection) -> Result<(), String> {
+    if column_names(db, "calendars")?.iter().any(|c| c == "key_hash") {
+        return Ok(());
+    }
+    snapshot(path, "0.8.0")?;
+    let tx = db.begin()?;
+    db.execute_batch("ALTER TABLE calendars ADD COLUMN key_hash TEXT NOT NULL DEFAULT '';")?;
+    let rows = db.query("SELECT id, agent_key FROM calendars", &[], |row| {
+        (row.text(0), row.text(1))
+    })?;
+    for (id, key) in rows {
+        db.execute(
+            "UPDATE calendars SET key_hash = ?1 WHERE id = ?2",
+            &[Bind::Text(&sha256_hex(&key)), Bind::Text(&id)],
+        )?;
+    }
+    tx.commit()
+}
+
+/// Copy the database file to `<path>.pre-<label>` before a migration that
+/// rewrites rows. Never overwrites an earlier snapshot.
+fn snapshot(path: &Path, label: &str) -> Result<(), String> {
+    let mut target = path.as_os_str().to_owned();
+    target.push(format!(".pre-{label}"));
+    let target = std::path::PathBuf::from(target);
+    if target.exists() {
+        return Ok(());
+    }
+    std::fs::copy(path, &target)
+        .map(|_| ())
+        .map_err(|e| format!("snapshot {}: {e}", target.display()))
+}
+
 fn migrate_events(db: &Connection) -> Result<(), String> {
     let tx = db.begin()?;
     migrate_events_in(db)?;
@@ -1306,9 +1363,18 @@ pub fn json_calendar(row: &CalendarRow, base: &str) -> Value {
             "write",
             Value::String(format!("{origin}/v1/c/{}/events", row.id)),
         ),
-        ("key", Value::String(row.agent_key.clone())),
         ("createdAt", Value::String(row.created_at.clone())),
     ])
+}
+
+/// `json_calendar` plus the write key. Only for the create response: the key
+/// is not recoverable afterwards.
+pub fn json_calendar_created(row: &CalendarRow, key: &str, base: &str) -> Value {
+    let mut value = json_calendar(row, base);
+    if let Value::Object(map) = &mut value {
+        map.insert("key".into(), Value::String(key.to_string()));
+    }
+    value
 }
 
 pub fn json_event(row: &EventRow) -> Value {
@@ -1369,7 +1435,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("almanac-db-{}", hex_encode(&random_bytes(8))));
         std::fs::create_dir_all(&dir).unwrap();
         let db = Db::open(dir.join("calendar.db")).unwrap();
-        let cal = db.create_calendar(Some("Test"), None, None, None).unwrap();
+        let (cal, _) = db.create_calendar(Some("Test"), None, None, None).unwrap();
         (db, cal.id)
     }
 
@@ -1705,6 +1771,81 @@ mod tests {
         assert!(!cols.contains(&"calendar_id".to_string()));
     }
 
+    // ---- key hashing -------------------------------------------------------
+
+    fn snapshot_path(db: &std::path::Path) -> std::path::PathBuf {
+        let mut name = db.as_os_str().to_owned();
+        name.push(".pre-0.8.0");
+        std::path::PathBuf::from(name)
+    }
+
+    #[test]
+    fn hashes_existing_keys_and_snapshots_the_file_first() {
+        let path = scratch_path();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE calendars (
+                    id TEXT PRIMARY KEY, feed_token TEXT NOT NULL UNIQUE,
+                    agent_key TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL
+                 );
+                 INSERT INTO calendars VALUES
+                    ('cal_old', 'ft', 'old-key', 'Old', '2026-08-01T00:00:00.000Z');",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let cal = db.get_calendar("cal_old").unwrap().unwrap();
+        assert_eq!(cal.key_hash, sha256_hex("old-key"));
+
+        // The plaintext is still there, so the previous release can run.
+        let conn = Connection::open(&path).unwrap();
+        let legacy = conn
+            .query_row("SELECT agent_key FROM calendars WHERE id = 'cal_old'", &[], |r| r.text(0))
+            .unwrap();
+        assert_eq!(legacy.as_deref(), Some("old-key"));
+
+        // The snapshot is the file as it was: no key_hash column.
+        let snap = Connection::open(snapshot_path(&path)).unwrap();
+        assert!(!column_names(&snap, "calendars").unwrap().contains(&"key_hash".to_string()));
+
+        // A second open neither re-migrates nor overwrites the snapshot.
+        drop(db);
+        Db::open(&path).unwrap();
+        let snap = Connection::open(snapshot_path(&path)).unwrap();
+        assert!(!column_names(&snap, "calendars").unwrap().contains(&"key_hash".to_string()));
+    }
+
+    #[test]
+    fn a_fresh_database_needs_no_snapshot() {
+        let path = scratch_path();
+        Db::open(&path).unwrap();
+        assert!(!snapshot_path(&path).exists());
+    }
+
+    #[test]
+    fn a_new_calendar_stores_only_the_hash_of_its_key() {
+        let (db, id) = tmp_db();
+        let (row, key) = db.create_calendar(Some("Two"), None, None, None).unwrap();
+        assert_eq!(row.key_hash, sha256_hex(&key));
+        assert_ne!(id, row.id);
+
+        // Nothing in the file holds the key: not the hash column, not the
+        // legacy one.
+        let stored = db
+            .conn
+            .query_row(
+                "SELECT agent_key, key_hash FROM calendars WHERE id = ?1",
+                &[Bind::Text(&row.id)],
+                |r| (r.text(0), r.text(1)),
+            )
+            .unwrap()
+            .unwrap();
+        assert_ne!(stored.0, key);
+        assert_ne!(stored.1, key);
+        assert!(!stored.0.is_empty(), "an empty legacy value would match an empty header");
+    }
+
     // ---- home calendar -----------------------------------------------------
 
     #[test]
@@ -1712,15 +1853,17 @@ mod tests {
         let (db, _) = tmp_db();
         let (home, changed) = db.ensure_home_calendar("feed-1", "key-1", "Home").unwrap();
         assert_eq!(changed, vec!["created"]);
-        assert_eq!((home.feed_token.as_str(), home.agent_key.as_str()), ("feed-1", "key-1"));
+        assert_eq!(home.feed_token, "feed-1");
+        assert_eq!(home.key_hash, sha256_hex("key-1"));
+        assert_ne!(home.key_hash, "key-1", "the key must not be stored");
 
         let (_, changed) = db.ensure_home_calendar("feed-1", "key-1", "Home").unwrap();
         assert!(changed.is_empty());
 
         let (home, changed) = db.ensure_home_calendar("feed-1", "key-2", "Home").unwrap();
         assert_eq!(changed, vec!["agent_key"]);
-        assert_eq!(home.agent_key, "key-2");
-        assert_eq!(db.get_calendar("home").unwrap().unwrap().agent_key, "key-2");
+        assert_eq!(home.key_hash, sha256_hex("key-2"));
+        assert_eq!(db.get_calendar("home").unwrap().unwrap().key_hash, sha256_hex("key-2"));
 
         let (home, changed) = db.ensure_home_calendar("feed-2", "key-2", "Renamed").unwrap();
         assert_eq!(changed, vec!["feed_token", "name"]);

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use almanac::backup::{spawn as spawn_backups, BackupConfig};
 use almanac::db::Db;
 use almanac::env::{load_env_file, read_config_from_os};
 use almanac::http::{json_response, read_request_with, write_response, ReadError};
@@ -46,6 +47,11 @@ fn main() {
             }
         }
     }
+    // Copies of the database on a timer; BACKUP_INTERVAL_HOURS=0 turns it off.
+    spawn_backups(
+        Path::new(&cfg.db_path).to_path_buf(),
+        BackupConfig::from_env(&cfg.db_path, |k| std::env::var(k).ok()),
+    );
     let public_base = std::env::var("PUBLIC_BASE").unwrap_or_default();
     let mut state = AppState::new(db, public_base);
     // TRUSTED_PROXY_HOPS sets which X-Forwarded-For entry counts as the

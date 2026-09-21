@@ -66,10 +66,10 @@ fn requires_a_user_agent_in_machine_docs() {
     let text = String::from_utf8(body).unwrap();
     assert!(text.contains("User-Agent"));
     assert!(text.contains("403"), "say what happens without one");
-    assert!(
-        !text.contains("shown once"),
-        "GET /v1/c/{{id}} returns the key again"
-    );
+    // Only true because GET /v1/c/{id} no longer returns the key; see
+    // `the_key_is_shown_at_creation_and_never_again`.
+    assert!(text.contains("shown once"));
+    assert!(text.contains("cannot be recovered"));
 }
 
 #[test]
@@ -867,4 +867,62 @@ fn bad_create_bodies_are_rejected_and_create_nothing() {
     assert_eq!(post(json, b"{\"name\": \"Roadmap\"}"), 201);
     assert_eq!(post("application/x-www-form-urlencoded", b"name=Trip"), 201);
     assert_eq!(post("text/plain", b"whatever"), 201);
+}
+
+// ---- key hashing -------------------------------------------------------------
+
+fn create_json(app: &AppState) -> (String, String) {
+    let (status, res) = create(app, None);
+    assert_eq!(status, 201);
+    let v = parse(std::str::from_utf8(&res.body).unwrap()).unwrap();
+    (
+        v.get("id").and_then(Value::as_str).unwrap().to_string(),
+        v.get("key").and_then(Value::as_str).unwrap().to_string(),
+    )
+}
+
+#[test]
+fn the_key_is_shown_at_creation_and_never_again() {
+    let app = test_app();
+    let (id, key) = create_json(&app);
+
+    // Authenticates, so the hash of the shown key is what was stored.
+    let info = |bearer: &str| {
+        send(
+            &app,
+            Request::new("GET", &format!("/v1/c/{id}"))
+                .with_header("authorization", &format!("Bearer {bearer}")),
+        )
+    };
+    let (status, body, _) = info(&key);
+    assert_eq!(status, 200);
+    let text = String::from_utf8(body).unwrap();
+    let v = parse(&text).unwrap();
+    assert!(v.get("key").is_none(), "GET must not return the key: {text}");
+    assert!(!text.contains(&key), "the key leaked into {text}");
+    assert_eq!(v.get("id").and_then(Value::as_str), Some(id.as_str()));
+
+    assert_eq!(info("wrong").0, 401);
+}
+
+#[test]
+fn a_row_with_no_hash_never_authenticates() {
+    let dir = std::env::temp_dir().join(format!("almanac-nohash-{}", hex_encode(&random_bytes(8))));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("calendar.db");
+    let db = Db::open(&path).unwrap();
+    db.ensure_home_calendar(FEED, KEY, "My Calendar").unwrap();
+    let app = AppState::new(db, BASE.into());
+    let (id, _) = create_json(&app);
+
+    let conn = almanac::sqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("UPDATE calendars SET key_hash = ''").unwrap();
+
+    for header in [None, Some(""), Some("Bearer "), Some("Bearer x")] {
+        let mut req = Request::new("GET", &format!("/v1/c/{id}/events"));
+        if let Some(h) = header {
+            req = req.with_header("authorization", h);
+        }
+        assert_eq!(send(&app, req).0, 401, "{header:?}");
+    }
 }

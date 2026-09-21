@@ -24,7 +24,7 @@ Calendar → File → New Calendar Subscription → paste that URL.
 - **Stable UIDs** so edits replace, not duplicate
 
 ### Agent API
-- **POST /calendars** returns `id`, `subscribe`, `write`, and `key`
+- **POST /calendars** returns `id`, `subscribe`, `write`, and `key` (shown once; only its hash is stored)
 - **PUT /v1/c/:id/events/:uid** is the write path
 - Contract: [AGENTS.md](AGENTS.md) · machine: `/llms.txt`
 

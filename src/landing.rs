@@ -36,7 +36,7 @@ pub fn llms_txt(base: &str) -> String {
         "",
         &format!("POST {origin}/calendars"),
         "Optional JSON body: { \"name\": \"Optional Title\" }",
-        "Returns id, subscribe URL, write URL, and key. Store the key. It is the write secret.",
+        "Returns id, subscribe URL, write URL, and key. Store the key. It is the write secret, shown once. A lost key cannot be recovered.",
         "",
         "Write (idempotent):",
         &format!("PUT {origin}/v1/c/{{id}}/events/{{uid}}"),
@@ -147,7 +147,7 @@ pub fn html_home(base: &str) -> String {
         "   - subscribe  (https://…/feed/<token>.ics)",
         "   - write",
         "   - key",
-        "4. Store id and key. You need them to add or change events.",
+        "4. Store id and key. The key is shown once and cannot be recovered. You need both to add or change events.",
         "5. Give me those four values in plain text.",
         "6. Help me subscribe. The feed is HTTPS ICS. Do not use webcal://.",
         "   Walk me through my calendar of choice:",
@@ -182,13 +182,12 @@ pub fn html_home(base: &str) -> String {
     )
 }
 
-pub fn html_created(row: &CalendarRow, base: &str) -> String {
+pub fn html_created(row: &CalendarRow, key: &str, base: &str) -> String {
     let creds = json_calendar(row, base);
     let subscribe = creds
         .get("subscribe")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let key = creds.get("key").and_then(Value::as_str).unwrap_or_default();
     let write = creds
         .get("write")
         .and_then(Value::as_str)
@@ -198,7 +197,7 @@ pub fn html_created(row: &CalendarRow, base: &str) -> String {
         &format!(
             r#"
   <h1>Calendar Ready</h1>
-  <p>Save the key. It is not shown again in this form.</p>
+  <p>Save the key now. It is shown once and cannot be recovered.</p>
   <p><strong>Id</strong><br><code>{}</code></p>
   <p><strong>Subscribe</strong><br><code>{}</code></p>
   <p><strong>Key</strong><br><code>{}</code></p>

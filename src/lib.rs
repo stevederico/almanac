@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod db;
 pub mod env;
 pub mod http;
@@ -7,6 +8,7 @@ pub mod landing;
 pub mod limits;
 pub mod rrule;
 pub mod server;
+pub mod sha256;
 pub mod sqlite;
 pub mod time;
 pub mod tz;

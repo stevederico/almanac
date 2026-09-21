@@ -25,7 +25,7 @@ Success `201`:
 }
 ```
 
-Store `id` and `key`. The key is the write secret.
+Store `id` and `key`. The key is the write secret. It is shown once and cannot be recovered; only its hash is stored.
 
 ## Write
 
