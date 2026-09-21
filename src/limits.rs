@@ -21,6 +21,8 @@ pub struct Limits {
     pub max_events: i64,
     /// Todos per calendar.
     pub max_todos: i64,
+    /// Notes per calendar.
+    pub max_notes: i64,
     /// Exdates plus overrides per series.
     pub max_exceptions: usize,
     /// Writes per calendar per minute. The `home` calendar is exempt.
@@ -49,6 +51,9 @@ impl Limits {
         if let Some(v) = num(get("MAX_TODOS_PER_CALENDAR")) {
             self.max_todos = v;
         }
+        if let Some(v) = num(get("MAX_NOTES_PER_CALENDAR")) {
+            self.max_notes = v;
+        }
         if let Some(v) = num(get("MAX_WRITES_PER_MINUTE")) {
             self.writes_per_minute = v;
         }
@@ -67,6 +72,7 @@ impl Default for Limits {
             max_calendars: 100_000,
             max_events: 2_000,
             max_todos: 5_000,
+            max_notes: 500,
             max_exceptions: 500,
             writes_per_minute: 120,
             proxy_hops: 1,

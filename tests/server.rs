@@ -933,4 +933,6 @@ fn llms_txt_documents_todos() {
     let text = String::from_utf8(body).unwrap();
     assert!(text.contains("/v1/c/{id}/todos"));
     assert!(text.contains("todos.subscribe"));
+    assert!(text.contains("/v1/c/{id}/notes"));
+    assert!(text.contains("notes.subscribe"));
 }

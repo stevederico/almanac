@@ -36,7 +36,7 @@ pub fn llms_txt(base: &str) -> String {
         "",
         &format!("POST {origin}/calendars"),
         "Optional JSON body: { \"name\": \"Optional Title\" }",
-        "Returns id, subscribe URL, write URL, todos URLs, and key. Store the key. It is the write secret, shown once. A lost key cannot be recovered. The same key writes events and todos.",
+        "Returns id, subscribe URL, write URL, todos and notes URLs, and key. Store the key. It is the write secret, shown once. A lost key cannot be recovered. The same key writes events, todos and notes.",
         "",
         "Write (idempotent):",
         &format!("PUT {origin}/v1/c/{{id}}/events/{{uid}}"),
@@ -73,6 +73,15 @@ pub fn llms_txt(base: &str) -> String {
         "title (required, <=512). description (<=4000). due: YYYY-MM-DD or ISO-8601 datetime, null clears. priority: 0-9 (1 highest, 0 none). done: true stamps completedAt, false clears it. tags: up to 10 of [a-z0-9_-], <=32 chars.",
         "PUT keeps any field you leave out. Send null or \"\" to clear one. Wrong types are a 400.",
         "Todos feed: GET the todos.subscribe URL from POST /calendars or GET /v1/c/{id}. text/calendar VTODOs. No bearer. Its token differs from the event feed.",
+        "",
+        "Notes (same key, own feed):",
+        &format!("PUT {origin}/v1/c/{{id}}/notes/{{uid}}"),
+        "{ \"title\": \"Ideas\", \"body\": \"# Ideas\\n- one\", \"tags\": [\"work\"], \"pinned\": true }",
+        "POST /v1/c/{id}/notes mints a uid. Get, PATCH, DELETE: /v1/c/{id}/notes/{uid}",
+        "List: GET /v1/c/{id}/notes?q=text&tag=work&body=true. The list leaves bodies out unless body=true. q matches title or body, ASCII case-insensitive.",
+        "title (required, <=200). body: markdown text, <=32KB. tags: as todos. pinned: true lists it first. Newest first otherwise.",
+        "PUT keeps any field you leave out. Send null to clear body or tags. Wrong types are a 400. Caps: 500 notes per calendar (409).",
+        "Notes feed: GET the notes.subscribe URL. Atom, newest 200. No bearer. Its token differs from the other feeds.",
         "",
     ]
     .join("\n")
@@ -191,7 +200,13 @@ pub fn html_home(base: &str) -> String {
     )
 }
 
-pub fn html_created(row: &CalendarRow, key: &str, todos_subscribe: &str, base: &str) -> String {
+pub fn html_created(
+    row: &CalendarRow,
+    key: &str,
+    todos_subscribe: &str,
+    notes_subscribe: &str,
+    base: &str,
+) -> String {
     let creds = json_calendar(row, base);
     let subscribe = creds
         .get("subscribe")
@@ -210,6 +225,7 @@ pub fn html_created(row: &CalendarRow, key: &str, todos_subscribe: &str, base: &
   <p><strong>Id</strong><br><code>{}</code></p>
   <p><strong>Subscribe</strong><br><code>{}</code></p>
   <p><strong>Todos feed</strong><br><code>{}</code></p>
+  <p><strong>Notes feed</strong><br><code>{}</code></p>
   <p><strong>Key</strong><br><code>{}</code></p>
   <p><strong>Write</strong><br><code>PUT {}/{{uid}}</code></p>
   <pre>Authorization: Bearer {}</pre>
@@ -218,6 +234,7 @@ pub fn html_created(row: &CalendarRow, key: &str, todos_subscribe: &str, base: &
             esc(&row.id),
             esc(subscribe),
             esc(todos_subscribe),
+            esc(notes_subscribe),
             esc(key),
             esc(write),
             esc(key),

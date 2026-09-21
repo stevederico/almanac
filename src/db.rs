@@ -120,6 +120,7 @@ impl Db {
         migrate_calendars(path, &conn)?;
         migrate_events(&conn)?;
         crate::todos::migrate(&conn)?;
+        crate::notes::migrate(&conn)?;
         Ok(Self { conn })
     }
 

@@ -1,87 +1,13 @@
 //! Todos over the HTTP surface, in process through `handle()`.
 
-use almanac::db::Db;
-use almanac::http::{Request, Response};
-use almanac::json::{parse, Value};
-use almanac::server::{handle, AppState};
-use almanac::util::{hex_encode, random_bytes};
+mod common;
 
-const HOME_KEY: &str = "home-secret";
-const HOME_FEED: &str = "home-feed";
-const BASE: &str = "http://example.test";
-
-fn app() -> AppState {
-    let dir = std::env::temp_dir().join(format!("almanac-todos-{}", hex_encode(&random_bytes(8))));
-    std::fs::create_dir_all(&dir).unwrap();
-    let db = Db::open(dir.join("calendar.db")).unwrap();
-    db.ensure_home_calendar(HOME_FEED, HOME_KEY, "Home").unwrap();
-    let mut app = AppState::new(db, BASE.into());
-    // Creating calendars in these tests must not trip the create limit.
-    app.limits.creates_per_client_hour = 1000;
-    app
-}
-
-fn send(app: &AppState, req: Request) -> (u16, String, Response) {
-    let res = handle(app, &req);
-    (res.status, String::from_utf8_lossy(&res.body).into_owned(), res)
-}
-
-fn json(body: &str) -> Value {
-    parse(body).unwrap_or_else(|e| panic!("not json ({e}): {body}"))
-}
-
-struct Cal {
-    id: String,
-    key: String,
-    todos_feed_path: String,
-}
-
-fn create(app: &AppState) -> Cal {
-    let (status, body, _) = send(
-        app,
-        Request::new("POST", "/calendars")
-            .with_header("content-type", "application/json")
-            .with_header("accept", "application/json")
-            .with_body(b"{\"name\":\"Trip\"}".to_vec()),
-    );
-    assert_eq!(status, 201, "{body}");
-    let v = json(&body);
-    let todos = v.get("todos").expect("create response lists the todos endpoints");
-    let subscribe = todos.get("subscribe").and_then(Value::as_str).unwrap();
-    Cal {
-        id: v.get("id").and_then(Value::as_str).unwrap().to_string(),
-        key: v.get("key").and_then(Value::as_str).unwrap().to_string(),
-        todos_feed_path: subscribe.strip_prefix(BASE).unwrap().to_string(),
-    }
-}
-
-fn call(app: &AppState, key: &str, method: &str, path: &str, body: Option<&str>) -> (u16, Value) {
-    let mut req = Request::new(method, path).with_header("authorization", &format!("Bearer {key}"));
-    if let Some(body) = body {
-        req = req
-            .with_header("content-type", "application/json")
-            .with_body(body.as_bytes().to_vec());
-    }
-    let (status, text, _) = send(app, req);
-    let value = if text.is_empty() { Value::Null } else { json(&text) };
-    (status, value)
-}
-
-fn field<'a>(v: &'a Value, key: &str) -> &'a Value {
-    v.get(key).unwrap_or_else(|| panic!("no {key} in {v:?}"))
-}
-
-fn text<'a>(v: &'a Value, key: &str) -> &'a str {
-    field(v, key).as_str().unwrap_or_else(|| panic!("{key} is not a string in {v:?}"))
-}
+use almanac::http::Request;
+use almanac::json::Value;
+use common::*;
 
 fn titles(v: &Value) -> Vec<String> {
-    field(v, "todos")
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| text(t, "title").to_string())
-        .collect()
+    common::titles(v, "todos")
 }
 
 // ---- CRUD -------------------------------------------------------------------

@@ -1,3 +1,4 @@
+pub mod atom;
 pub mod backup;
 pub mod db;
 pub mod env;
@@ -6,6 +7,7 @@ pub mod ics;
 pub mod json;
 pub mod landing;
 pub mod limits;
+pub mod notes;
 pub mod rrule;
 pub mod server;
 pub mod sha256;

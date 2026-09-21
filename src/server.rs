@@ -5,6 +5,7 @@ use crate::db::{
     json_calendar, json_calendar_created, json_event, normalize_recurrence_id, parse_event_input,
     parse_event_patch, parse_override_input, parse_recurrence_id, CalendarRow, Db, EventRow,
 };
+use crate::atom::{render_atom, AtomEntry};
 use crate::http::{html_response, json_response, text_response, Request, Response};
 use crate::ics::{render_calendar, render_todos, IcsEvent, IcsOverride, IcsTodo};
 use crate::json::{parse as parse_json, stringify, Value};
@@ -12,6 +13,7 @@ use crate::landing::{html_created, html_home, json_index, llms_txt};
 use crate::limits::{client_id, Limiter, Limits, HOUR_MS, MINUTE_MS};
 use crate::sha256::sha256_hex;
 use crate::time::now_iso;
+use crate::notes::{self, NoteRow};
 use crate::todos::{self, TodoRow};
 
 const OG_PNG: &[u8] = include_bytes!("../public/og.png");
@@ -89,7 +91,11 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
         (m, "/v1/events") => events(state, req, "home", m, Target::Collection),
         (m, "/v1/todos") => todos::route(state, req, "home", m, None),
         (m, p) if let Some(uid) = p.strip_prefix("/v1/todos/") => {
-            item_route(state, req, "home", m, uid)
+            item_route(state, req, "home", m, uid, Resource::Todos)
+        }
+        (m, "/v1/notes") => notes::route(state, req, "home", m, None),
+        (m, p) if let Some(uid) = p.strip_prefix("/v1/notes/") => {
+            item_route(state, req, "home", m, uid, Resource::Notes)
         }
         (m, p) if let Some(rest) = p.strip_prefix("/v1/events/") => {
             events(state, req, "home", m, Target::of(rest))
@@ -175,12 +181,15 @@ fn create_calendar(state: &AppState, req: &Request) -> Response {
     };
     drop(db);
     if wants_html(req) || ctype.contains("application/x-www-form-urlencoded") {
-        let todos = view
-            .get("todos")
-            .and_then(|t| t.get("subscribe"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        return html_response(201, html_created(&saved, &key, todos, &base));
+        let feed = |kind: &str| {
+            view.get(kind)
+                .and_then(|t| t.get("subscribe"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let page = html_created(&saved, &key, &feed("todos"), &feed("notes"), &base);
+        return html_response(201, page);
     }
     json_response(201, &stringify(&view))
 }
@@ -247,10 +256,15 @@ fn hex_pair(hi: u8, lo: u8) -> Option<u8> {
     Some((digit(hi)? * 16 + digit(lo)?) as u8)
 }
 
+/// Newest notes an Atom feed carries. Readers only show recent entries, and a
+/// full calendar of long notes would be megabytes to poll.
+const NOTES_IN_FEED: i64 = 200;
+
 /// What a feed token resolved to, read under the lock.
 enum FeedBody {
     Events(String, Vec<EventRow>),
     Todos(String, Vec<TodoRow>),
+    Notes(String, String, Vec<NoteRow>),
 }
 
 fn feed(state: &AppState, token: &str) -> Response {
@@ -265,14 +279,21 @@ fn feed(state: &AppState, token: &str) -> Response {
                 Err(e) => return json_err(500, &e),
             },
             _ => match db.feed_target(&token) {
-                Ok(Some((cal_id, kind))) if kind == "todos" => {
+                Ok(Some((cal_id, kind))) if kind == "todos" || kind == "notes" => {
                     let name = match db.get_calendar(&cal_id) {
                         Ok(Some(cal)) => cal.name,
                         _ => return json_err(404, "not found"),
                     };
-                    match db.list_todos(&cal_id, None) {
-                        Ok(rows) => FeedBody::Todos(name, rows),
-                        Err(e) => return json_err(500, &e),
+                    if kind == "todos" {
+                        match db.list_todos(&cal_id, None) {
+                            Ok(rows) => FeedBody::Todos(name, rows),
+                            Err(e) => return json_err(500, &e),
+                        }
+                    } else {
+                        match db.list_notes(&cal_id, None, NOTES_IN_FEED) {
+                            Ok(rows) => FeedBody::Notes(cal_id, name, rows),
+                            Err(e) => return json_err(500, &e),
+                        }
                     }
                 }
                 Ok(_) => return json_err(404, "not found"),
@@ -280,8 +301,41 @@ fn feed(state: &AppState, token: &str) -> Response {
             },
         }
     };
-    let (filename, ics) = match body {
-        FeedBody::Events(name, events) => ("calendar.ics", render_events(&name, events)),
+    let (filename, ctype, ics) = match body {
+        FeedBody::Events(name, events) => (
+            "calendar.ics",
+            "text/calendar; charset=utf-8",
+            render_events(&name, events),
+        ),
+        FeedBody::Notes(cal_id, name, notes) => {
+            let updated = notes
+                .iter()
+                .map(|n| n.updated_at.as_str())
+                .max()
+                .map(str::to_string)
+                .unwrap_or_else(now_iso);
+            let entries: Vec<AtomEntry> = notes
+                .into_iter()
+                .map(|n| AtomEntry {
+                    id: format!("urn:almanac:{cal_id}:{}", n.uid),
+                    title: n.title,
+                    updated: n.updated_at,
+                    published: n.created_at,
+                    content: n.body,
+                    tags: n.tags,
+                })
+                .collect();
+            (
+                "notes.atom",
+                "application/atom+xml; charset=utf-8",
+                render_atom(
+                    &format!("urn:almanac:{cal_id}:notes"),
+                    &format!("{name} Notes"),
+                    &updated,
+                    &entries,
+                ),
+            )
+        }
         FeedBody::Todos(name, todos) => {
             let items: Vec<IcsTodo> = todos
                 .into_iter()
@@ -299,10 +353,10 @@ fn feed(state: &AppState, token: &str) -> Response {
                     updated_at: t.updated_at,
                 })
                 .collect();
-            ("todos.ics", render_todos(&name, &items))
+            ("todos.ics", "text/calendar; charset=utf-8", render_todos(&name, &items))
         }
     };
-    text_response(200, "text/calendar; charset=utf-8", ics)
+    text_response(200, ctype, ics)
         .header("cache-control", "no-cache")
         .header("content-disposition", &format!("inline; filename=\"{filename}\""))
 }
@@ -362,17 +416,40 @@ fn scoped(state: &AppState, req: &Request, method: &str, rest: &str) -> Response
         return todos::route(state, req, id, method, None);
     }
     if let Some(uid) = rest.strip_prefix("todos/") {
-        return item_route(state, req, id, method, uid);
+        return item_route(state, req, id, method, uid, Resource::Todos);
+    }
+    if rest == "notes" {
+        return notes::route(state, req, id, method, None);
+    }
+    if let Some(uid) = rest.strip_prefix("notes/") {
+        return item_route(state, req, id, method, uid, Resource::Notes);
     }
     json_err(404, "not found")
 }
 
-/// `todos/{uid}`. A uid never contains a slash, so anything deeper is a 404.
-fn item_route(state: &AppState, req: &Request, cal_id: &str, method: &str, uid: &str) -> Response {
+#[derive(Clone, Copy)]
+enum Resource {
+    Todos,
+    Notes,
+}
+
+/// `todos/{uid}` or `notes/{uid}`. A uid never contains a slash, so anything
+/// deeper is a 404.
+fn item_route(
+    state: &AppState,
+    req: &Request,
+    cal_id: &str,
+    method: &str,
+    uid: &str,
+    resource: Resource,
+) -> Response {
     if uid.is_empty() || uid.contains('/') {
         return json_err(404, "not found");
     }
-    todos::route(state, req, cal_id, method, Some(uid))
+    match resource {
+        Resource::Todos => todos::route(state, req, cal_id, method, Some(uid)),
+        Resource::Notes => notes::route(state, req, cal_id, method, Some(uid)),
+    }
 }
 
 fn calendar_info(state: &AppState, req: &Request, id: &str) -> Response {
@@ -387,21 +464,29 @@ fn calendar_info(state: &AppState, req: &Request, id: &str) -> Response {
     }
 }
 
-/// The calendar as the API shows it: its own fields plus where its todos are
-/// written and subscribed. `key` is only ever passed at creation.
+/// The calendar as the API shows it: its own fields plus where its todos and
+/// notes are written and subscribed. `key` is only ever passed at creation.
 fn calendar_view(db: &Db, cal: &CalendarRow, key: Option<&str>, base: &str) -> Result<Value, String> {
     let mut view = match key {
         Some(key) => json_calendar_created(cal, key, base),
         None => json_calendar(cal, base),
     };
     let origin = base.trim_end_matches('/');
-    let token = db.feed_token(&cal.id, "todos")?;
+    let todos_token = db.feed_token(&cal.id, "todos")?;
+    let notes_token = db.feed_token(&cal.id, "notes")?;
     if let Value::Object(map) = &mut view {
         map.insert(
             "todos".into(),
             Value::object(&[
                 ("write", Value::String(format!("{origin}/v1/c/{}/todos", cal.id))),
-                ("subscribe", Value::String(format!("{origin}/feed/{token}.ics"))),
+                ("subscribe", Value::String(format!("{origin}/feed/{todos_token}.ics"))),
+            ]),
+        );
+        map.insert(
+            "notes".into(),
+            Value::object(&[
+                ("write", Value::String(format!("{origin}/v1/c/{}/notes", cal.id))),
+                ("subscribe", Value::String(format!("{origin}/feed/{notes_token}.atom"))),
             ]),
         );
     }
@@ -706,11 +791,13 @@ fn safe_equal(given: &str, expected: &str) -> bool {
 }
 
 fn feed_token_of(raw: &str) -> String {
-    if raw.len() >= 4 && raw.to_ascii_lowercase().ends_with(".ics") {
-        raw[..raw.len() - 4].to_string()
-    } else {
-        raw.to_string()
+    let lower = raw.to_ascii_lowercase();
+    for ext in [".ics", ".atom"] {
+        if lower.ends_with(ext) && raw.len() > ext.len() {
+            return raw[..raw.len() - ext.len()].to_string();
+        }
     }
+    raw.to_string()
 }
 
 fn request_base(req: &Request, fallback: &str) -> String {

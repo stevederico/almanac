@@ -1,3 +1,11 @@
+0.10.0
+
+  Add notes
+  Add notes feed
+  Add note search
+  Add Atom output
+  Add note cap
+
 0.9.0
 
   Add todos

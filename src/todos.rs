@@ -76,7 +76,7 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), String> {
 }
 
 /// Tags are stored as `,a,b,` so every one is delimited on both sides.
-fn pack_tags(tags: &[String]) -> String {
+pub(crate) fn pack_tags(tags: &[String]) -> String {
     if tags.is_empty() {
         String::new()
     } else {
@@ -84,7 +84,7 @@ fn pack_tags(tags: &[String]) -> String {
     }
 }
 
-fn unpack_tags(raw: &str) -> Vec<String> {
+pub(crate) fn unpack_tags(raw: &str) -> Vec<String> {
     raw.split(',')
         .filter(|t| !t.is_empty())
         .map(str::to_string)
@@ -411,7 +411,7 @@ fn parse_due(value: &str) -> Result<String, String> {
 }
 
 /// Lowercased, deduplicated, `[a-z0-9_-]{1,32}`, at most ten.
-fn parse_tags(items: &[Value]) -> Result<Vec<String>, String> {
+pub(crate) fn parse_tags(items: &[Value]) -> Result<Vec<String>, String> {
     let mut tags: Vec<String> = Vec::new();
     for item in items {
         let raw = item.as_str().ok_or("tags must be a list of strings")?;

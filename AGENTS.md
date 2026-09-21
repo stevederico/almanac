@@ -25,7 +25,7 @@ Success `201`:
 }
 ```
 
-Store `id` and `key`. The key is the write secret. It is shown once and cannot be recovered; only its hash is stored. The same key writes events and todos. The response also has `todos.write` and `todos.subscribe`.
+Store `id` and `key`. The key is the write secret. It is shown once and cannot be recovered; only its hash is stored. The same key writes events and todos. The response also has `todos.write`, `todos.subscribe`, `notes.write` and `notes.subscribe`.
 
 ## Write
 
@@ -130,6 +130,32 @@ curl -sS -X DELETE "$BASE/v1/c/$ID/todos/milk" -H "Authorization: Bearer $KEY"
 Open todos list first, then by due date. `GET /v1/c/{id}/todos` filters with `?status=open|done` and `?tag=`. Caps: 5000 todos per calendar (`409`). Events and todos share one write budget per calendar.
 
 Todos feed: `todos.subscribe` from create or `GET /v1/c/{id}`. `text/calendar` with `VTODO`s. Its token is not the event feed's token.
+
+## Notes
+
+Same key, own endpoints, own feed.
+
+```bash
+curl -sS -X PUT "$BASE/v1/c/$ID/notes/ideas" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Ideas","body":"# Ideas\n- one","tags":["work"],"pinned":true}'
+curl -sS "$BASE/v1/c/$ID/notes?q=ideas&tag=work" -H "Authorization: Bearer $KEY"
+curl -sS "$BASE/v1/c/$ID/notes/ideas" -H "Authorization: Bearer $KEY"
+```
+
+`POST /v1/c/{id}/notes` mints a `note-…` uid. `GET`, `PATCH`, `DELETE` on `/v1/c/{id}/notes/{uid}`. `PUT` keeps fields you leave out; `null` clears `body` or `tags`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `title` | string | required, ≤200 |
+| `body` | string | markdown, ≤32KB |
+| `tags` | string[] | as todos |
+| `pinned` | bool | pinned notes list first |
+
+The list omits bodies. Add `?body=true` for them. `?q=` matches title or body, ASCII case-insensitive, with `%` and `_` literal. Caps: 500 notes per calendar (`409`), one write budget shared with events and todos.
+
+Notes feed: `notes.subscribe`. Atom, newest 200 notes, no bearer, its own token.
 
 Subscribe: paste `subscribe` in Calendar → File → New Calendar Subscription. Use `https://`, not `webcal://`.
 
