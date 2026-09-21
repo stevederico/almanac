@@ -52,31 +52,32 @@ fn returns_html_for_browsers() {
     );
     assert_eq!(status, 200);
     let html = String::from_utf8(body).unwrap();
-    assert!(html.contains("Your agent keeps the calendar."));
-    assert!(html.contains("send your agent this"));
-    assert!(html.contains("Copy prompt"));
+    assert!(html.contains("Agent-First Calendar, Notes, and Todos"));
+    assert!(html.contains("Ask your agent"));
+    assert!(html.contains("id=\"copy\""));
+    // The prompt on the page is the prompt that gets copied: one element.
+    assert!(html.contains("id=\"prompt\""));
+    assert!(html.contains("example.test/llms.txt"));
+    assert!(html.contains("Add nothing until I ask"));
     assert!(html.contains("/llms.txt"));
-    assert!(html.contains("/calendars"));
-    assert!(html.contains("Subscribe from web"));
-    assert!(html.contains("Do not add events unless I ask"));
-    // The page has to say it is more than a calendar.
-    assert!(html.contains("todos") && html.contains("notes"));
-    assert!(html.contains("todos.subscribe") && html.contains("notes.subscribe"));
-    assert!(html.contains("/export"));
-    // The three products are shown, not just described, and the bunny is gone.
-    for app in ["A calendar app", "A todo app", "A notes app"] {
-        assert!(html.contains(app), "no mockup for {app}");
-    }
-    assert!(html.contains("Three products. One key."));
-    assert!(!html.contains("mascot") && !html.contains("<img"));
-    // No external requests: fonts and images are all local.
-    assert!(!html.contains("fonts.googleapis"));
-    assert!(!html.contains("<link rel=\"stylesheet\""));
-    assert!(!html.contains("{origin}"), "an unformatted placeholder leaked into the page");
-    assert!(html.contains("example.test/v1/c/{id}/export"));
     assert!(html.contains("og.png?v="), "the share image URL must be versioned");
     assert!(html.contains("og:image"));
     assert!(html.contains("twitter:card"));
+    assert!(!html.contains("{origin}"), "an unformatted placeholder leaked into the page");
+    // The three products are shown, in the order they are named, and the bunny is gone.
+    let order: Vec<usize> = ["A calendar app", "A notes app", "A todo app"]
+        .iter()
+        .map(|app| html.find(app).unwrap_or_else(|| panic!("no mockup for {app}")))
+        .collect();
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "mockups are out of order: {order:?}");
+    assert!(!html.contains("mascot") && !html.contains("<img"));
+    // Less text: no feed-format labels, no long explanations.
+    for gone in ["Three products", "Copy prompt", "short version", ".ics feed", "Only a hash"] {
+        assert!(!html.contains(gone), "the page still says {gone:?}");
+    }
+    // No external requests: fonts and images are all local.
+    assert!(!html.contains("fonts.googleapis"));
+    assert!(!html.contains("<link rel=\"stylesheet\""));
     assert!(!html.contains("Create Calendar"));
 }
 

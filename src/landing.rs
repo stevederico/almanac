@@ -101,7 +101,7 @@ pub fn llms_txt(base: &str) -> String {
 }
 
 const DESCRIPTION: &str =
-    "An agent calendar, with todos and notes. Agents write them. You subscribe in the app you already have.";
+    "An agent-first calendar, notes and todos. Your agent writes them. You subscribe in the app you already use.";
 
 const PAGE: &str = r##"<!doctype html>
 <html lang="en">
@@ -116,7 +116,7 @@ const PAGE: &str = r##"<!doctype html>
   <meta property="og:image" content="@IMAGE@">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Almanac. Your agent keeps the calendar.">
+  <meta property="og:image:alt" content="Almanac. Agent-first calendar, notes and todos.">
 @OG_URL@  <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="@TITLE@">
   <meta name="twitter:description" content="@DESC@">
@@ -130,7 +130,7 @@ const PAGE: &str = r##"<!doctype html>
     code, pre { font-family: inherit; }
     pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
     button { font: inherit; font-size: 13px; font-weight: 600; min-height: 44px; padding: 0 16px; background: #f2b84b; color: #111210; border: 0; cursor: pointer; }
-    .wrap { max-width: 1152px; margin: 0 auto; padding: 0 clamp(20px, 5vw, 64px); }
+    .wrap { max-width: 1216px; margin: 0 auto; padding: 0 clamp(20px, 5vw, 64px); }
     .narrow { max-width: 46rem; padding-top: 3rem; padding-bottom: 3rem; }
     .narrow h1 { font-size: 1.6rem; font-weight: 500; letter-spacing: -0.02em; margin: 0 0 1rem; }
     .narrow pre { background: #171814; border: 1px solid #34362d; padding: 0.9rem 1rem; }
@@ -147,7 +147,7 @@ const PAGE: &str = r##"<!doctype html>
 /// Cache key for the share image. Cloudflare holds `/og.png` for hours and
 /// link-preview crawlers cache by URL, so a new image at the same URL keeps
 /// showing the old one. Bump this whenever `public/og.png` changes.
-const OG_VERSION: &str = "2";
+const OG_VERSION: &str = "3";
 
 fn page(title: &str, body: &str, origin: &str) -> String {
     let image = if origin.is_empty() {
@@ -174,38 +174,25 @@ const HOME_CSS: &str = r##"
   .word { font-size: 18px; font-weight: 600; letter-spacing: 0.02em; }
   .word i { font-style: normal; color: #f2b84b; }
   .bar a { font-size: 14px; text-decoration: none; border-bottom: 1px solid #55574c; }
-  .hero { padding-top: clamp(40px, 7vw, 88px); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(32px, 5vw, 64px); align-items: start; }
-  .eyebrow { margin: 0 0 28px; font-size: 14px; color: #f2b84b; letter-spacing: 0.08em; text-transform: uppercase; }
-  h1 { margin: 0 0 28px; font-size: clamp(38px, 5vw, 60px); line-height: 1.04; letter-spacing: -0.035em; font-weight: 500; }
-  .sub { margin: 0; max-width: 460px; font-size: 19px; line-height: 1.55; color: #a29e90; }
+  .hero { padding-top: clamp(48px, 9vw, 112px); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(32px, 5vw, 64px); align-items: center; }
+  h1 { margin: 0; font-size: clamp(34px, 4.2vw, 54px); line-height: 1.04; letter-spacing: -0.035em; font-weight: 500; }
   .box { border: 1px solid #34362d; background: #171814; }
   .box-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #34362d; font-size: 13px; color: #8f8b7e; }
-  .short { padding: 24px 24px 28px; font-size: 15px; line-height: 1.7; color: #d4d0c2; }
-  .box-f { padding: 12px 24px; border-top: 1px solid #34362d; font-size: 13px; color: #8f8b7e; }
-  .box-f summary { cursor: pointer; margin-top: 6px; color: #e9e6da; }
-  .box-f details pre { margin-top: 12px; padding-top: 12px; border-top: 1px solid #34362d; font-size: 13px; line-height: 1.6; color: #b8b4a6; max-height: 320px; overflow: auto; }
-  .products { margin-top: clamp(56px, 8vw, 96px); }
-  .products-h { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px 24px; padding-bottom: 20px; margin-bottom: 32px; border-bottom: 1px solid #2a2c25; }
-  .products-h h2 { margin: 0; font-size: 28px; font-weight: 500; letter-spacing: -0.02em; }
-  .products-h span { font-size: 14px; color: #8f8b7e; }
+  .prompt { padding: 24px 24px 28px; font-size: 15px; line-height: 1.7; color: #d4d0c2; }
+  .products { margin-top: clamp(64px, 9vw, 120px); padding-bottom: clamp(48px, 7vw, 96px); }
   .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 48px; align-items: start; }
   .cols figure { margin: 0; max-width: 420px; }
-  .cols h3 { margin: 20px 0 4px; font-size: 20px; font-weight: 500; }
-  .feed { margin: 0; font-size: 13px; color: #f2b84b; }
-  .cols figcaption p { margin: 8px 0 0; font-size: 15px; line-height: 1.5; color: #b8b4a6; }
-  .foot { margin-top: clamp(56px, 8vw, 96px); padding-bottom: 40px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 24px; font-size: 13px; color: #8f8b7e; }
+  .cols h3 { margin: 20px 0 0; font-size: 20px; font-weight: 500; }
   .app { height: 340px; overflow: hidden; background: #171814; color: #e9e6da; border: 1px solid #34362d; font-size: 12px; }
   .app-h { height: 44px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #34362d; }
   .app-h b { font-size: 15px; font-weight: 600; }
   .app-h.lg { height: 60px; padding: 0 16px; }
   .app-h.lg b { font-size: 20px; }
-  .app-h span { color: #8f8b7e; }
   .cal-days, .cal-allday, .cal-body { display: grid; grid-template-columns: 36px repeat(5, minmax(0, 1fr)); }
   .cal-days { height: 30px; align-items: center; border-bottom: 1px solid #34362d; color: #8f8b7e; font-size: 11px; }
   .cal-days span { text-align: center; }
   .cal-days b { color: #e9e6da; font-weight: 600; }
   .cal-allday { height: 24px; align-items: center; border-bottom: 1px solid #34362d; }
-  .cal-allday .lbl { padding-left: 3px; font-size: 8.5px; white-space: nowrap; color: #8f8b7e; }
   .trip { grid-column: 6; height: 18px; margin: 0 2px; padding: 0 6px; background: #f2b84b; color: #111210; font-size: 11px; line-height: 18px; font-weight: 600; }
   .cal-body { height: 220px; }
   .hrs { position: relative; }
@@ -226,16 +213,16 @@ const HOME_CSS: &str = r##"
   .notes { list-style: none; margin: 0; padding: 0; }
   .notes li { height: 91px; padding: 10px 16px 0; border-top: 1px solid #34362d; }
   .notes b { font-size: 16px; font-weight: 600; }
-  .notes .pin { margin-left: 8px; padding: 1px 6px; background: #f2b84b; color: #111210; font-size: 10px; font-weight: 600; }
+  .notes .pin { display: inline-block; width: 8px; height: 8px; margin-left: 8px; background: #f2b84b; }
   .notes p { margin: 3px 0 0; height: 32px; overflow: hidden; font-size: 12px; line-height: 16px; color: #8f8b7e; }
   .notes .tag { display: inline-block; margin-top: 5px; padding: 1px 7px; background: #22241d; color: #8f8b7e; font-size: 11px; }
   @media (max-width: 860px) { .hero { grid-template-columns: minmax(0, 1fr); } }
 "##;
 
 const CALENDAR_MOCK: &str = r##"<div class="app" role="img" aria-label="A calendar app showing one week: a weekly standup on Tuesday, a dentist visit on Wednesday, a design review on Thursday and an all-day trip on Friday.">
-<div class="app-h"><b>Sep 21 &ndash; 25</b><span>Week</span></div>
+<div class="app-h"><b>Sep 21 &ndash; 25</b></div>
 <div class="cal-days"><span></span><span>Mon <b>21</b></span><span>Tue <b>22</b></span><span>Wed <b>23</b></span><span>Thu <b>24</b></span><span>Fri <b>25</b></span></div>
-<div class="cal-allday"><span class="lbl">all day</span><span class="trip">Trip</span></div>
+<div class="cal-allday"><span class="trip">Trip</span></div>
 <div class="cal-body">
 <div class="hrs"><span style="top:2px">9a</span><span style="top:46px">10a</span><span style="top:90px">11a</span><span style="top:134px">12p</span><span style="top:178px">1p</span></div>
 <div class="col"><div class="ev" style="top:177px;height:42px"><b>Roadmap sync</b></div></div>
@@ -247,7 +234,7 @@ const CALENDAR_MOCK: &str = r##"<div class="app" role="img" aria-label="A calend
 </div>"##;
 
 const TODOS_MOCK: &str = r##"<div class="app" role="img" aria-label="A todo app with four open items and one finished: buy milk, call Bob, renew passport, book flights, and pack bags done.">
-<div class="app-h lg"><b>Todos</b><span>4 open</span></div>
+<div class="app-h lg"><b>Todos</b></div>
 <ul class="todos">
 <li><span class="cb"></span><div><b>Buy milk</b><small>due Oct 1 &middot; #home</small></div><em>P1</em></li>
 <li><span class="cb"></span><div><b>Call Bob</b><small>due Sep 30, 5 PM</small></div></li>
@@ -260,7 +247,7 @@ const TODOS_MOCK: &str = r##"<div class="app" role="img" aria-label="A todo app 
 const NOTES_MOCK: &str = r##"<div class="app" role="img" aria-label="A notes app with a search box and three notes: a pinned Ideas note, a Trip plan and Groceries.">
 <div class="search">Search notes</div>
 <ul class="notes">
-<li><b>Ideas</b><span class="pin">PINNED</span><p>Pack light. Call Bob about the roadmap. Sketch the landing page.</p><span class="tag">#work</span></li>
+<li><b>Ideas</b><span class="pin" aria-hidden="true"></span><p>Pack light. Call Bob about the roadmap. Sketch the landing page.</p><span class="tag">#work</span></li>
 <li><b>Trip plan</b><p>Flights booked. Passport renewal due Oct 14. Hotel near the station.</p><span class="tag">#travel</span></li>
 <li><b>Groceries</b><p>Milk, eggs, coffee. Ask about the good bread.</p><span class="tag">#home</span></li>
 </ul>
@@ -270,29 +257,19 @@ const HOME_BODY: &str = r##"<style>@HOME_CSS@</style>
 <div class="wrap">
 <header class="bar"><span class="word">almanac<i>_</i></span><a href="/llms.txt">/llms.txt</a></header>
 <section class="hero">
-<div>
-<p class="eyebrow">calendar / todos / notes</p>
-<h1>Your agent keeps the calendar.</h1>
-<p class="sub">One key writes events, todos and notes. Each one gets its own feed. You subscribe in the apps you already use.</p>
-</div>
+<h1>Agent-First Calendar, Notes, and Todos</h1>
 <div class="box">
-<div class="box-h"><span>send your agent this</span><button type="button" id="copy">Copy prompt</button></div>
-<pre class="short">@SHORT@</pre>
-<div class="box-f">
-<span>Above is the short version. Copy prompt sends all 9 steps.</span>
-<details><summary>Read the full prompt</summary><pre id="prompt">@PROMPT@</pre></details>
-</div>
+<div class="box-h"><span>Ask your agent</span><button type="button" id="copy">Copy</button></div>
+<pre class="prompt" id="prompt">@PROMPT@</pre>
 </div>
 </section>
 <section class="products">
-<div class="products-h"><h2>Three products. One key.</h2><span>Your agent writes them. They show up in your apps.</span></div>
 <div class="cols">
-<figure>@CALENDAR@<figcaption><h3>Calendar</h3><p class="feed">/events &middot; .ics feed</p><p>Apple Calendar, Google Calendar and Outlook subscribe by URL.</p></figcaption></figure>
-<figure>@TODOS@<figcaption><h3>Todos</h3><p class="feed">/todos &middot; .ics tasks feed</p><p>Apps that show tasks from a subscribed calendar, like Thunderbird.</p></figcaption></figure>
-<figure>@NOTES@<figcaption><h3>Notes</h3><p class="feed">/notes &middot; Atom feed</p><p>Any feed reader. Markdown bodies, searchable through the API.</p></figcaption></figure>
+<figure>@CALENDAR@<figcaption><h3>Calendar</h3></figcaption></figure>
+<figure>@NOTES@<figcaption><h3>Notes</h3></figcaption></figure>
+<figure>@TODOS@<figcaption><h3>Todos</h3></figcaption></figure>
 </div>
 </section>
-<footer class="foot"><span>Your key is shown once. Only a hash is stored.</span><span>Export everything, any time.</span></footer>
 </div>
 <script>
   document.getElementById('copy').onclick = function () {
@@ -303,51 +280,20 @@ const HOME_BODY: &str = r##"<style>@HOME_CSS@</style>
 pub fn html_home(base: &str) -> String {
     let origin = base.trim_end_matches('/');
     let prompt = [
-        "Almanac is a hosted calendar with todos and notes. You create one over HTTP. One key writes all three, and each has its own feed. I subscribe to the feeds in my own apps. You write events, todos and notes later when I ask.",
-        "",
-        &format!("1. GET {origin}/llms.txt and follow it."),
-        "2. Create a calendar:",
-        &format!("   POST {origin}/calendars"),
-        "   Content-Type: application/json",
-        "   Body may be {} or { \"name\": \"optional title\" }",
-        "3. The JSON response has:",
-        "   - id",
-        "   - subscribe  (events feed, https://…/feed/<token>.ics)",
-        "   - write",
-        "   - key",
-        "   - todos.subscribe and todos.write  (todos feed, .ics with VTODOs)",
-        "   - notes.subscribe and notes.write  (notes feed, Atom)",
-        "4. Store id and key. The key is shown once and cannot be recovered. You need both to add or change anything.",
-        "5. Give me the id, key and the three subscribe URLs in plain text.",
-        "6. Help me subscribe. The feed is HTTPS ICS. Do not use webcal://.",
-        "   Walk me through my calendar of choice:",
-        "   - Apple Calendar: File → New Calendar Subscription → paste subscribe",
-        "   - Google Calendar: Settings → Add calendar → From URL → paste subscribe",
-        "   - Outlook: Add calendar → Subscribe from web → paste subscribe",
-        "   - Anything else that accepts an https .ics URL: paste subscribe there",
-        "7. Offer the other two feeds. The todos feed is an .ics of tasks: apps that show tasks from a subscribed calendar, like Thunderbird, display it. The notes feed is Atom: any feed reader takes it. Only set up what I want.",
-        "8. Do not add events unless I ask. Same for todos and notes. Setup is create + subscribe only.",
-        &format!("9. I can read everything back out at any time: GET {origin}/v1/c/{{id}}/export with the key."),
-        "",
-        &format!("Base: {origin}"),
-    ]
-    .join("\n");
-    let short = [
         "Set up Almanac for me.".to_string(),
         format!("1. Read {origin}/llms.txt and follow it."),
         "2. Create my calendar over HTTP.".to_string(),
         "3. Store the id and key. The key is shown once.".to_string(),
-        "4. Give me the three subscribe URLs and walk me through subscribing.".to_string(),
+        "4. Give me the three subscribe URLs and help me subscribe.".to_string(),
         "Add nothing until I ask.".to_string(),
     ]
     .join("\n");
     let body = HOME_BODY
         .replace("@HOME_CSS@", HOME_CSS)
-        .replace("@SHORT@", &esc(&short))
         .replace("@PROMPT@", &esc(&prompt))
         .replace("@CALENDAR@", CALENDAR_MOCK)
-        .replace("@TODOS@", TODOS_MOCK)
-        .replace("@NOTES@", NOTES_MOCK);
+        .replace("@NOTES@", NOTES_MOCK)
+        .replace("@TODOS@", TODOS_MOCK);
     page("Almanac", &body, origin)
 }
 

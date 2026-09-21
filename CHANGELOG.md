@@ -1,3 +1,11 @@
+0.16.0
+
+  Simplify landing copy
+  Ask your agent
+  Reorder products
+  Trim mockup labels
+  Update share image
+
 0.15.0
 
   Move skill into repo
