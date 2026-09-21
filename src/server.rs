@@ -74,10 +74,14 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
         ("GET", "/mascot.webp") => text_response(200, "image/webp", MASCOT_WEBP.to_vec()),
         ("POST", "/calendars") => create_calendar(state, req),
         (m, p) if p.starts_with("/feed/") => {
-            if m != "GET" {
+            if m != "GET" && m != "HEAD" {
                 return json_err(404, "not found");
             }
-            feed(state, &p["/feed/".len()..])
+            let res = feed(state, &p["/feed/".len()..]);
+            if m == "HEAD" {
+                return head_of(res);
+            }
+            res
         }
         (m, p) if p.starts_with("/v1/c/") => scoped(state, req, m, &p["/v1/c/".len()..]),
         (m, "/v1/events") => events(state, req, "home", m, Target::Collection),
@@ -86,6 +90,14 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
         }
         _ => json_err(404, "not found"),
     }
+}
+
+/// Same status and headers as the GET, no body. The length is the GET's, as
+/// HTTP requires.
+fn head_of(mut res: Response) -> Response {
+    let len = res.body.len();
+    res.body = Vec::new();
+    res.header("content-length", &len.to_string())
 }
 
 fn health(state: &AppState) -> Response {

@@ -1,3 +1,11 @@
+0.5.0
+
+  Strip control chars
+  Support feed HEAD
+  Fix llms.txt claims
+  Document User-Agent
+  Fix test ports
+
 0.4.0
 
   Add transactions

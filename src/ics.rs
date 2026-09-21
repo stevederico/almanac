@@ -1,4 +1,8 @@
 /// RFC 5545 text escaping for SUMMARY / DESCRIPTION / LOCATION.
+///
+/// Newlines become the `\n` escape and tabs pass through. Any other control
+/// character (NUL, bell, escape, DEL, C1) is dropped: TEXT allows none of
+/// them, and calendar apps reject or truncate a feed that carries one.
 pub fn escape_text(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -7,6 +11,9 @@ pub fn escape_text(value: &str) -> String {
         .replace('\n', "\\n")
         .replace(';', "\\;")
         .replace(',', "\\,")
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\t')
+        .collect()
 }
 
 /// Fold a content line at 75 octets. Continuations start with a space.
@@ -275,6 +282,14 @@ mod tests {
     #[test]
     fn escapes_ics_specials() {
         assert_eq!(escape_text("a;b,c\\d\ne"), "a\\;b\\,c\\\\d\\ne");
+    }
+
+    #[test]
+    fn drops_control_characters_but_keeps_tabs_and_newlines() {
+        assert_eq!(escape_text("a\u{0}b\u{7}c\u{1b}[0m\u{7f}d\u{85}e"), "abc[0mde");
+        assert_eq!(escape_text("a\tb"), "a\tb");
+        assert_eq!(escape_text("a\r\nb\rc\nd"), "a\\nb\\nc\\nd");
+        assert_eq!(escape_text("é ✓ 日本"), "é ✓ 日本");
     }
 
     #[test]

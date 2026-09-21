@@ -23,10 +23,24 @@ impl Drop for ServerGuard {
     }
 }
 
+/// Ports already handed to a server in this process.
+static HANDED_OUT: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+
 /// Ask the OS for a free port, then release it for the server to claim.
+///
+/// The probe-and-release leaves a window where the OS can hand the same port
+/// to a parallel test, which then talks to (or kills) the wrong server. Never
+/// return one twice.
 fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind probe");
-    listener.local_addr().expect("probe addr").port()
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let port = listener.local_addr().expect("probe addr").port();
+        let mut used = HANDED_OUT.lock().unwrap_or_else(|e| e.into_inner());
+        if !used.contains(&port) {
+            used.push(port);
+            return port;
+        }
+    }
 }
 
 fn start_server(db: &str) -> (ServerGuard, u16) {

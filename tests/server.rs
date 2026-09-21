@@ -65,6 +65,11 @@ fn requires_a_user_agent_in_machine_docs() {
     assert_eq!(status, 200);
     let text = String::from_utf8(body).unwrap();
     assert!(text.contains("User-Agent"));
+    assert!(text.contains("403"), "say what happens without one");
+    assert!(
+        !text.contains("shown once"),
+        "GET /v1/c/{{id}} returns the key again"
+    );
 }
 
 #[test]
@@ -780,4 +785,45 @@ fn rotating_the_home_key_takes_effect() {
     // The feed token did not change, so subscribers are undisturbed.
     let (status, _, _) = send(&app, Request::new("GET", &format!("/feed/{FEED}.ics")));
     assert_eq!(status, 200);
+}
+
+#[test]
+fn feed_carries_no_raw_control_characters() {
+    let app = test_app();
+    let body = r#"{"summary":"Bell\u0007 NUL\u0000 Esc\u001b[31m","location":"Rm\u007f1","description":"line1\r\nline2\ttab\u0085x","start":"2026-09-22"}"#;
+    assert_eq!(call(&app, "PUT", "/v1/events/ctl", KEY, body), 201);
+    let (status, feed, _) = send(&app, Request::new("GET", &format!("/feed/{FEED}.ics")));
+    assert_eq!(status, 200);
+    let text = String::from_utf8(feed).unwrap();
+    let bad: Vec<char> = text
+        .chars()
+        .filter(|c| c.is_control() && !matches!(c, '\r' | '\n' | '\t'))
+        .collect();
+    assert!(bad.is_empty(), "control characters in the feed: {bad:?}");
+    assert!(text.contains("SUMMARY:Bell NUL Esc[31m"));
+    assert!(text.contains("line1\\nline2\ttab"));
+}
+
+#[test]
+fn head_on_a_feed_matches_get_without_the_body() {
+    let app = test_app();
+    let path = format!("/feed/{FEED}.ics");
+    let (get_status, get_body, get_res) = send(&app, Request::new("GET", &path));
+    let (head_status, head_body, head_res) = send(&app, Request::new("HEAD", &path));
+    assert_eq!((get_status, head_status), (200, 200));
+    assert!(head_body.is_empty());
+    assert_eq!(
+        head_res.header_value("content-length"),
+        Some(get_body.len().to_string().as_str())
+    );
+    assert_eq!(
+        head_res.header_value("content-type"),
+        get_res.header_value("content-type")
+    );
+    let (status, _, _) = send(&app, Request::new("HEAD", "/feed/wrong.ics"));
+    assert_eq!(status, 404);
+    for method in ["POST", "PUT", "DELETE"] {
+        let (status, _, _) = send(&app, Request::new(method, &path));
+        assert_eq!(status, 404, "{method}");
+    }
 }

@@ -4,6 +4,8 @@ Agent-first ICS calendar. Request a calendar. Subscribe the URL. Write events.
 
 ## Create
 
+Prod answers `403` to an empty or default-curl User-Agent. Add `-A "Mozilla/5.0 my-agent"` to every `curl` below.
+
 ```bash
 curl -sS -X POST https://almanac.dottie.ai/calendars \
   -H "Content-Type: application/json" \
