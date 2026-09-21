@@ -13,7 +13,7 @@ use crate::time::{is_ymd, now_iso, parse_instant};
 use crate::util::{prefixed_uid, secret};
 
 const TODO_COLS: &str =
-    "uid, title, description, due, priority, done, completed_at, tags, sequence, created_at, updated_at";
+    "uid, title, description, due, priority, done, completed_at, tags, sequence, created_at, updated_at, seal";
 
 const MAX_TAGS: usize = 10;
 
@@ -33,6 +33,7 @@ pub struct TodoRow {
     pub sequence: i64,
     pub created_at: String,
     pub updated_at: String,
+    pub seal: String,
 }
 
 /// What a write may set. `None` leaves the stored value alone; for text fields
@@ -72,7 +73,11 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), String> {
             kind TEXT NOT NULL,
             UNIQUE (calendar_id, kind)
         );",
-    )
+    )?;
+    if !crate::db::column_names(conn, "todos")?.iter().any(|c| c == "seal") {
+        conn.execute_batch("ALTER TABLE todos ADD COLUMN seal TEXT NOT NULL DEFAULT '';")?;
+    }
+    Ok(())
 }
 
 /// Tags are stored as `,a,b,` so every one is delimited on both sides.
@@ -104,6 +109,7 @@ fn row_todo(row: &Row) -> TodoRow {
         sequence: row.i64(8),
         created_at: row.text(9),
         updated_at: row.text(10),
+        seal: row.text(11),
     }
 }
 
@@ -130,8 +136,8 @@ impl Db {
     /// Open items first, then by due date with undated last, then oldest.
     pub fn list_todos(&self, calendar_id: &str, done: Option<bool>) -> Result<Vec<TodoRow>, String> {
         let filter = match done {
-            Some(true) => " AND done = 1",
-            Some(false) => " AND done = 0",
+            Some(true) => " AND done = 1 AND seal = ''",
+            Some(false) => " AND done = 0 AND seal = ''",
             None => "",
         };
         self.conn.query(
@@ -225,6 +231,53 @@ impl Db {
             .ok_or_else(|| "failed to save todo".to_string())?;
         tx.commit()?;
         Ok((saved, existing.is_none()))
+    }
+
+    pub fn put_todo_seal(
+        &self,
+        calendar_id: &str,
+        uid: &str,
+        seal: &str,
+    ) -> Result<(TodoRow, bool), String> {
+        if !is_uid(uid) {
+            return Err("uid must be 1-200 chars: letters, digits, . _ @ -".into());
+        }
+        let tx = self.conn.begin()?;
+        let existing = self.get_todo(calendar_id, uid)?;
+        let now = now_iso();
+        let created = existing.is_none();
+        if created {
+            self.conn.execute(
+                "INSERT INTO todos (
+                    calendar_id, uid, title, description, due, priority, done, completed_at,
+                    tags, sequence, created_at, updated_at, seal
+                 ) VALUES (?1, ?2, '', '', '', 0, 0, '', '', 0, ?3, ?3, ?4)",
+                &[
+                    Bind::Text(calendar_id),
+                    Bind::Text(uid),
+                    Bind::Text(&now),
+                    Bind::Text(seal),
+                ],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE todos
+                 SET title = '', description = '', due = '', priority = 0, done = 0,
+                     completed_at = '', tags = '', seal = ?1, sequence = sequence + 1, updated_at = ?2
+                 WHERE calendar_id = ?3 AND uid = ?4",
+                &[
+                    Bind::Text(seal),
+                    Bind::Text(&now),
+                    Bind::Text(calendar_id),
+                    Bind::Text(uid),
+                ],
+            )?;
+        }
+        let saved = self
+            .get_todo(calendar_id, uid)?
+            .ok_or_else(|| "failed to save todo".to_string())?;
+        tx.commit()?;
+        Ok((saved, created))
     }
 
     /// Change only the fields present. `Err("not found")` if there is no such todo.
@@ -435,6 +488,14 @@ pub(crate) fn parse_tags(items: &[Value]) -> Result<Vec<String>, String> {
 }
 
 pub fn json_todo(row: &TodoRow) -> Value {
+    if !row.seal.is_empty() {
+        return Value::object(&[
+            ("uid", Value::String(row.uid.clone())),
+            ("seal", Value::String(row.seal.clone())),
+            ("createdAt", Value::String(row.created_at.clone())),
+            ("updatedAt", Value::String(row.updated_at.clone())),
+        ]);
+    }
     let optional = |s: &str| {
         if s.is_empty() {
             Value::Null
@@ -525,6 +586,39 @@ fn write(state: &AppState, req: &Request, cal: &CalendarRow, path_uid: Option<&s
         Ok(v) => v,
         Err(e) => return json_err(400, &e),
     };
+    if let Some(wire) = match crate::seal::classify(&body, &cal.feed) {
+        Ok(v) => v,
+        Err(e) => return json_err(400, &e),
+    } {
+        let uid = path_uid
+            .map(str::to_string)
+            .or_else(|| body.get("uid").and_then(Value::as_str).map(str::to_string))
+            .filter(|u| !u.is_empty());
+        let Some(uid) = uid else {
+            return json_err(400, "uid is required");
+        };
+        let db = lock_db(state);
+        if !is_home(cal) {
+            let creating = match db.get_todo(&cal.id, &uid) {
+                Ok(existing) => existing.is_none(),
+                Err(e) => return json_err(500, &e),
+            };
+            if creating {
+                match db.count_todos(&cal.id) {
+                    Ok(n) if n >= state.limits.max_todos => return json_err(409, "todo list is full"),
+                    Ok(_) => {}
+                    Err(e) => return json_err(500, &e),
+                }
+            }
+        }
+        return match db.put_todo_seal(&cal.id, &uid, &wire) {
+            Ok((row, created)) => json_response(
+                if created { 201 } else { 200 },
+                &stringify(&json_todo(&row)),
+            ),
+            Err(e) => json_err(400, &e),
+        };
+    }
     let fields = match parse_todo_fields(&body, false) {
         Ok(f) => f,
         Err(e) => return json_err(400, &e),
@@ -557,6 +651,9 @@ fn write(state: &AppState, req: &Request, cal: &CalendarRow, path_uid: Option<&s
 }
 
 fn patch(state: &AppState, req: &Request, cal: &CalendarRow, uid: &str) -> Response {
+    if cal.feed == "seal" {
+        return json_err(400, "calendar is sealed");
+    }
     let body = match parse_body(req) {
         Ok(v) => v,
         Err(e) => return json_err(400, &e),

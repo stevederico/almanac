@@ -22,6 +22,8 @@ import datetime
 import json
 import os
 import pathlib
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -30,6 +32,60 @@ import urllib.request
 def fail(message):
     print(f"pull-export: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+def almanac_bin():
+    chosen = os.environ.get("ALMANAC_BIN", "").strip()
+    if chosen:
+        return chosen
+    found = shutil.which("almanac")
+    if found:
+        return found
+    root = pathlib.Path(__file__).resolve().parent.parent / "target"
+    for name in ("release", "debug"):
+        built = root / name / "almanac"
+        if built.is_file() and os.access(built, os.X_OK):
+            return str(built)
+    return ""
+
+
+def open_seals(data, cal_id):
+    """Replace sealed items with the opened JSON. Returns whether any were opened."""
+    kinds = (("events", "event"), ("todos", "todo"), ("notes", "note"))
+    sealed = any(
+        isinstance(item, dict) and item.get("seal")
+        for name, _ in kinds
+        for item in data[name]
+    )
+    if not sealed:
+        return False
+    binary = almanac_bin()
+    if not binary:
+        fail("sealed items need the almanac binary to open")
+    for name, kind in kinds:
+        opened = []
+        for item in data[name]:
+            seal = item.get("seal") if isinstance(item, dict) else None
+            if not seal:
+                opened.append(item)
+                continue
+            uid = str(item.get("uid") or "")
+            proc = subprocess.run(
+                [binary, "open", "--cal", cal_id, "--kind", kind, "--uid", uid],
+                input=seal.encode(),
+                capture_output=True,
+            )
+            if proc.returncode != 0:
+                fail("a seal could not be opened")
+            try:
+                plain = json.loads(proc.stdout)
+            except ValueError:
+                fail("a seal could not be opened")
+            if isinstance(plain, dict) and "uid" not in plain:
+                plain["uid"] = uid
+            opened.append(plain)
+        data[name] = opened
+    return True
 
 
 def main():
@@ -71,6 +127,9 @@ def main():
         counts = {name: len(data[name]) for name in ("events", "todos", "notes")}
     except (ValueError, KeyError, TypeError):
         fail("the response was not a complete export, nothing saved")
+
+    if open_seals(data, cal_id):
+        body = json.dumps(data).encode()
 
     dest.mkdir(parents=True, exist_ok=True)
     os.chmod(dest, 0o700)

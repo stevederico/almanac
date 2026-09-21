@@ -28,6 +28,7 @@ pub struct AtomEntry {
     pub published: String,
     pub content: String,
     pub tags: Vec<String>,
+    pub seal: String,
 }
 
 /// `updated` is the feed's own timestamp: the newest entry's, or now.
@@ -42,15 +43,25 @@ pub fn render_atom(feed_id: &str, title: &str, updated: &str, entries: &[AtomEnt
     for e in entries {
         out.push_str("  <entry>\n");
         out.push_str(&format!("    <id>{}</id>\n", xml_escape(&e.id)));
-        out.push_str(&format!("    <title>{}</title>\n", xml_escape(&e.title)));
+        let title = if e.seal.is_empty() { e.title.as_str() } else { "" };
+        let content = if e.seal.is_empty() { e.content.as_str() } else { "" };
+        out.push_str(&format!("    <title>{}</title>\n", xml_escape(title)));
         out.push_str(&format!("    <updated>{}</updated>\n", xml_escape(&e.updated)));
         out.push_str(&format!("    <published>{}</published>\n", xml_escape(&e.published)));
-        for tag in &e.tags {
-            out.push_str(&format!("    <category term=\"{}\"/>\n", xml_escape(tag)));
+        if e.seal.is_empty() {
+            for tag in &e.tags {
+                out.push_str(&format!("    <category term=\"{}\"/>\n", xml_escape(tag)));
+            }
+        }
+        if !e.seal.is_empty() {
+            out.push_str(&format!(
+                "    <X-ALMANAC-SEAL>{}</X-ALMANAC-SEAL>\n",
+                xml_escape(&e.seal)
+            ));
         }
         out.push_str(&format!(
             "    <content type=\"text\">{}</content>\n",
-            xml_escape(&e.content)
+            xml_escape(content)
         ));
         out.push_str("  </entry>\n");
     }
@@ -87,6 +98,7 @@ mod tests {
                 published: "2026-09-01T10:00:00.000Z".into(),
                 content: "socks & shoes\n- passport".into(),
                 tags: vec!["travel".into()],
+                seal: String::new(),
             }],
         );
         assert_eq!(
@@ -122,6 +134,7 @@ mod tests {
                 published: "p".into(),
                 content: "</content><evil/>".into(),
                 tags: vec!["a\"/><evil x=\"".into()],
+                seal: String::new(),
             }],
         );
         assert!(!xml.contains("<evil"), "{xml}");

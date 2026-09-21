@@ -26,7 +26,27 @@ Never print, log or paste `$KEY`. A key is shown once, when its calendar is crea
 
 Every request needs a `User-Agent`. `-A "Claude-Agent"` works. An empty or default curl one gets a Cloudflare 403.
 
+## Seals
+
+`GET $BASE/v1/c/$ID` includes `feed`. `seal` is the default for a new calendar. `plain` is the readable field API.
+
+On a `seal` calendar, seal before every write and open after every read, for events, todos, and notes. The server stores ciphertext and cannot search or merge fields inside it. Fetch the list with no `q`, `tag`, or `status`, open each seal, then filter locally.
+
+```bash
+BIN="$HOME/Projects/almanac/target/release/almanac"
+printf '%s' "$JSON" | "$BIN" seal --cal "$ID" --kind event --uid "$UID" | {
+  read -r SEAL
+  curl -sS -A "Claude-Agent" -X PUT "$BASE/v1/c/$ID/events/$UID" -H "$AUTH" -H "$J" \
+    -d "{\"seal\":\"$SEAL\"}"
+}
+printf '%s' "$SEAL" | "$BIN" open --cal "$ID" --kind event --uid "$UID"
+```
+
+`--kind` is `event`, `todo`, or `note`. The binary reads the key from the credentials file and never prints it. A sealed feed is a shell with `X-ALMANAC-SEAL` and no summary, start, or body. Do not set `feed` to `plain` unless he asks. `PATCH $BASE/v1/c/$ID` with `{"feed":"plain"}` or `{"feed":"seal"}` is that switch. `scripts/reseal` rewrites one named calendar to seals. Run it only when he names the calendar. His current calendar stays `plain` until then.
+
 ## Events
+
+On a `plain` calendar:
 
 ```bash
 curl -sS -A "Claude-Agent" -X PUT "$BASE/v1/c/$ID/events/<uid>" -H "$AUTH" -H "$J" \
@@ -36,6 +56,8 @@ curl -sS -A "Claude-Agent" -X PUT "$BASE/v1/c/$ID/events/<uid>" -H "$AUTH" -H "$
 List `GET /v1/c/$ID/events`. Change `PATCH …/events/<uid>`. Remove `DELETE …/events/<uid>`. Timed events need an offset, all-day is `"start":"2026-08-20"`. Repeats: `"rrule":"FREQ=WEEKLY;BYDAY=TU"` plus `"timeZone"`. Skip or change one date: `PUT …/events/<uid>/exdates` or `/overrides` with `recurrenceId`. Full rules: `$BASE/llms.txt`.
 
 ## Todos
+
+On a `plain` calendar:
 
 ```bash
 curl -sS -A "Claude-Agent" -X PUT "$BASE/v1/c/$ID/todos/<uid>" -H "$AUTH" -H "$J" \
@@ -47,6 +69,8 @@ curl -sS -A "Claude-Agent" -X PATCH "$BASE/v1/c/$ID/todos/<uid>" -H "$AUTH" -H "
 `title` is required (≤512). `due` is `YYYY-MM-DD` or an ISO datetime with offset. `priority` is 0-9, 1 highest. `done:true` stamps `completedAt`, `false` clears it. Tags are up to 10 of `[a-z0-9_-]`. `POST …/todos` (no uid) mints one. Get and delete are `…/todos/<uid>`. Cap 5000.
 
 ## Notes
+
+On a `plain` calendar:
 
 ```bash
 curl -sS -A "Claude-Agent" -X PUT "$BASE/v1/c/$ID/notes/<uid>" -H "$AUTH" -H "$J" \

@@ -57,6 +57,10 @@ pub fn export_markdown(
         out.push_str("None.\n");
     }
     for ev in events {
+        if !ev.seal.is_empty() {
+            out.push_str(&format!("- sealed · `{}`\n", ev.uid));
+            continue;
+        }
         out.push_str(&format!("- {} to {} — {}", ev.dtstart, ev.dtend, one_line(&ev.summary)));
         if !ev.location.is_empty() {
             out.push_str(&format!(" ({})", one_line(&ev.location)));
@@ -75,6 +79,10 @@ pub fn export_markdown(
         out.push_str("None.\n");
     }
     for todo in todos {
+        if !todo.seal.is_empty() {
+            out.push_str(&format!("- sealed · `{}`\n", todo.uid));
+            continue;
+        }
         out.push_str(&format!(
             "- [{}] {}",
             if todo.done { "x" } else { " " },
@@ -102,6 +110,10 @@ pub fn export_markdown(
         out.push_str("\nNone.\n");
     }
     for note in notes {
+        if !note.seal.is_empty() {
+            out.push_str(&format!("\n### sealed\n\n`{}`\n", note.uid));
+            continue;
+        }
         out.push_str(&format!("\n### {}\n\n", one_line(&note.title)));
         let mut facts = vec![format!("updated {}", note.updated_at)];
         if note.pinned {
@@ -129,6 +141,7 @@ mod tests {
             key_hash: "SECRET-HASH".into(),
             name: "Trip\nPlan".into(),
             created_at: "2026-09-01T00:00:00.000Z".into(),
+            feed: "plain".into(),
         }
     }
 
@@ -145,6 +158,7 @@ mod tests {
             sequence: 0,
             created_at: "c".into(),
             updated_at: "u".into(),
+            seal: String::new(),
         }
     }
 
@@ -158,6 +172,7 @@ mod tests {
             sequence: 0,
             created_at: "c".into(),
             updated_at: "2026-09-02T00:00:00.000Z".into(),
+            seal: String::new(),
         }
     }
 

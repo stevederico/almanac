@@ -11,7 +11,7 @@ use crate::tz;
 use crate::util::{event_uid, hex_encode, random_bytes, secret};
 
 const EVENT_COLS: &str = "uid, summary, description, location, dtstart, dtend, \
-     all_day, transparent, sequence, created_at, updated_at, rrule, tzid";
+     all_day, transparent, sequence, created_at, updated_at, rrule, tzid, seal";
 
 #[derive(Debug, Clone)]
 pub struct CalendarRow {
@@ -21,6 +21,8 @@ pub struct CalendarRow {
     pub key_hash: String,
     pub name: String,
     pub created_at: String,
+    /// `seal` stores ciphertext. `plain` is the readable feed.
+    pub feed: String,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +40,7 @@ pub struct EventRow {
     pub updated_at: String,
     pub rrule: String,
     pub tzid: String,
+    pub seal: String,
     pub exdates: Vec<String>,
     pub overrides: Vec<EventOverride>,
 }
@@ -262,6 +265,7 @@ impl Db {
             );",
         )?;
         migrate_calendars(path, &conn)?;
+        migrate_feed_column(&conn)?;
         migrate_events(&conn)?;
         crate::todos::migrate(&conn)?;
         crate::notes::migrate(&conn)?;
@@ -296,7 +300,7 @@ impl Db {
 
     pub fn get_calendar(&self, id: &str) -> Result<Option<CalendarRow>, String> {
         self.conn.query_row(
-            "SELECT id, feed_token, key_hash, name, created_at FROM calendars WHERE id = ?1",
+            "SELECT id, feed_token, key_hash, name, created_at, feed FROM calendars WHERE id = ?1",
             &[Bind::Text(id)],
             row_calendar,
         )
@@ -304,7 +308,7 @@ impl Db {
 
     pub fn get_calendar_by_feed_token(&self, token: &str) -> Result<Option<CalendarRow>, String> {
         self.conn.query_row(
-            "SELECT id, feed_token, key_hash, name, created_at FROM calendars WHERE feed_token = ?1",
+            "SELECT id, feed_token, key_hash, name, created_at, feed FROM calendars WHERE feed_token = ?1",
             &[Bind::Text(token)],
             row_calendar,
         )
@@ -318,12 +322,14 @@ impl Db {
         id: Option<&str>,
         feed_token: Option<&str>,
         agent_key: Option<&str>,
+        feed_mode: &str,
     ) -> Result<(CalendarRow, String), String> {
         let name = name.unwrap_or("Almanac").trim();
         let name = if name.is_empty() { "Almanac" } else { name };
         if name.len() > 80 {
             return Err("name is too long".into());
         }
+        let mode = crate::seal::feed_mode(feed_mode)?;
         let generated_id = format!("cal_{}", hex_encode(&random_bytes(8)));
         let id = id.unwrap_or(&generated_id);
         let now = now_iso();
@@ -333,8 +339,8 @@ impl Db {
         // throwaway so that rolling back to a build that compares it can never
         // match an empty `Authorization` header.
         self.conn.execute(
-            "INSERT INTO calendars (id, feed_token, agent_key, key_hash, name, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO calendars (id, feed_token, agent_key, key_hash, name, created_at, feed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             &[
                 Bind::Text(id),
                 Bind::Text(&feed),
@@ -342,6 +348,7 @@ impl Db {
                 Bind::Text(&sha256_hex(&key)),
                 Bind::Text(name),
                 Bind::Text(&now),
+                Bind::Text(mode),
             ],
         )?;
         let row = self
@@ -423,8 +430,13 @@ impl Db {
         if let Some(by_token) = self.get_calendar_by_feed_token(feed_token)? {
             return Ok((by_token, Vec::new()));
         }
-        let (row, _) =
-            self.create_calendar(Some(name), Some("home"), Some(feed_token), Some(agent_key))?;
+        let (row, _) = self.create_calendar(
+            Some(name),
+            Some("home"),
+            Some(feed_token),
+            Some(agent_key),
+            "plain",
+        )?;
         Ok((row, vec!["created"]))
     }
 
@@ -560,6 +572,72 @@ impl Db {
             .ok_or_else(|| "failed to save event".to_string())?;
         tx.commit()?;
         Ok(saved)
+    }
+
+    /// Replace the row with a seal and drop any plaintext exception rows.
+    pub fn put_event_seal(
+        &self,
+        calendar_id: &str,
+        uid: &str,
+        seal: &str,
+    ) -> Result<(EventRow, bool), String> {
+        if !is_uid(uid) {
+            return Err("uid must be 1-200 chars: letters, digits, . _ @ -".into());
+        }
+        let tx = self.conn.begin()?;
+        let existing = self.get_event(calendar_id, uid)?;
+        let now = now_iso();
+        let created = existing.is_none();
+        if created {
+            self.conn.execute(
+                "INSERT INTO events (
+                    calendar_id, uid, summary, description, location, dtstart, dtend,
+                    all_day, transparent, sequence, created_at, updated_at, rrule, tzid, seal
+                 ) VALUES (?1, ?2, '', '', '', '', '', 0, 1, 0, ?3, ?3, '', '', ?4)",
+                &[
+                    Bind::Text(calendar_id),
+                    Bind::Text(uid),
+                    Bind::Text(&now),
+                    Bind::Text(seal),
+                ],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE events
+                 SET summary = '', description = '', location = '', dtstart = '', dtend = '',
+                     all_day = 0, transparent = 1, rrule = '', tzid = '', seal = ?1,
+                     sequence = sequence + 1, updated_at = ?2
+                 WHERE calendar_id = ?3 AND uid = ?4",
+                &[
+                    Bind::Text(seal),
+                    Bind::Text(&now),
+                    Bind::Text(calendar_id),
+                    Bind::Text(uid),
+                ],
+            )?;
+            self.conn.execute(
+                "DELETE FROM event_exceptions WHERE calendar_id = ?1 AND uid = ?2",
+                &[Bind::Text(calendar_id), Bind::Text(uid)],
+            )?;
+        }
+        let saved = self
+            .get_event(calendar_id, uid)?
+            .ok_or_else(|| "failed to save event".to_string())?;
+        tx.commit()?;
+        Ok((saved, created))
+    }
+
+    pub fn set_feed(&self, id: &str, feed: &str) -> Result<CalendarRow, String> {
+        let mode = crate::seal::feed_mode(feed)?;
+        if self.get_calendar(id)?.is_none() {
+            return Err("not found".into());
+        }
+        self.conn.execute(
+            "UPDATE calendars SET feed = ?1 WHERE id = ?2",
+            &[Bind::Text(mode), Bind::Text(id)],
+        )?;
+        self.get_calendar(id)?
+            .ok_or_else(|| "not found".to_string())
     }
 
     pub fn patch_event(
@@ -897,6 +975,7 @@ fn row_calendar(row: &crate::sqlite::Row) -> CalendarRow {
         key_hash: row.text(2),
         name: row.text(3),
         created_at: row.text(4),
+        feed: row.text(5),
     }
 }
 
@@ -915,6 +994,7 @@ fn row_event(row: &crate::sqlite::Row) -> EventRow {
         updated_at: row.text(10),
         rrule: row.text(11),
         tzid: row.text(12),
+        seal: row.text(13),
         exdates: Vec::new(),
         overrides: Vec::new(),
     }
@@ -1000,6 +1080,13 @@ fn migrate_calendars(path: &Path, db: &Connection) -> Result<(), String> {
         )?;
     }
     tx.commit()
+}
+
+fn migrate_feed_column(db: &Connection) -> Result<(), String> {
+    if column_names(db, "calendars")?.iter().any(|c| c == "feed") {
+        return Ok(());
+    }
+    db.execute_batch("ALTER TABLE calendars ADD COLUMN feed TEXT NOT NULL DEFAULT 'plain';")
 }
 
 impl Db {
@@ -1116,6 +1203,10 @@ fn migrate_events_in(db: &Connection) -> Result<(), String> {
             db.execute_batch("ALTER TABLE events ADD COLUMN tzid TEXT NOT NULL DEFAULT '';")?;
         }
     }
+    let cols = column_names(db, "events")?;
+    if !cols.iter().any(|c| c == "seal") {
+        db.execute_batch("ALTER TABLE events ADD COLUMN seal TEXT NOT NULL DEFAULT '';")?;
+    }
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS event_exceptions (
             calendar_id TEXT NOT NULL,
@@ -1145,7 +1236,7 @@ fn table_names(db: &Connection) -> Result<Vec<String>, String> {
     )
 }
 
-fn column_names(db: &Connection, table: &str) -> Result<Vec<String>, String> {
+pub(crate) fn column_names(db: &Connection, table: &str) -> Result<Vec<String>, String> {
     db.query(&format!("PRAGMA table_info({table})"), &[], |row| {
         row.text(1)
     })
@@ -1564,6 +1655,7 @@ pub fn json_calendar(row: &CalendarRow, base: &str) -> Value {
             Value::String(format!("{origin}/v1/c/{}/events", row.id)),
         ),
         ("createdAt", Value::String(row.created_at.clone())),
+        ("feed", Value::String(row.feed.clone())),
     ])
 }
 
@@ -1578,6 +1670,14 @@ pub fn json_calendar_created(row: &CalendarRow, key: &str, base: &str) -> Value 
 }
 
 pub fn json_event(row: &EventRow) -> Value {
+    if !row.seal.is_empty() {
+        return Value::object(&[
+            ("uid", Value::String(row.uid.clone())),
+            ("seal", Value::String(row.seal.clone())),
+            ("createdAt", Value::String(row.created_at.clone())),
+            ("updatedAt", Value::String(row.updated_at.clone())),
+        ]);
+    }
     let mut pairs = vec![
         ("uid", Value::String(row.uid.clone())),
         ("summary", Value::String(row.summary.clone())),
@@ -1635,7 +1735,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("almanac-db-{}", hex_encode(&random_bytes(8))));
         std::fs::create_dir_all(&dir).unwrap();
         let db = Db::open(dir.join("calendar.db")).unwrap();
-        let (cal, _) = db.create_calendar(Some("Test"), None, None, None).unwrap();
+        let (cal, _) = db.create_calendar(Some("Test"), None, None, None, "plain").unwrap();
         (db, cal.id)
     }
 
@@ -2026,7 +2126,7 @@ mod tests {
     #[test]
     fn a_new_calendar_stores_only_the_hash_of_its_key() {
         let (db, id) = tmp_db();
-        let (row, key) = db.create_calendar(Some("Two"), None, None, None).unwrap();
+        let (row, key) = db.create_calendar(Some("Two"), None, None, None, "plain").unwrap();
         assert_eq!(row.key_hash, sha256_hex(&key));
         assert_ne!(id, row.id);
 
@@ -2063,7 +2163,7 @@ mod tests {
             .unwrap();
         }
         let db = Db::open(&path).unwrap();
-        let (fresh, _) = db.create_calendar(Some("C"), None, None, None).unwrap();
+        let (fresh, _) = db.create_calendar(Some("C"), None, None, None, "plain").unwrap();
         assert_eq!(db.scrub_legacy_keys(&path).unwrap(), 3, "two legacy plus the throwaway");
 
         let plaintext = db
@@ -2163,7 +2263,7 @@ mod tests {
     fn a_keyed_database_hides_the_note_body_and_rejects_a_wrong_key() {
         let path = enc_path();
         let db = Db::open_with(&path, Some(DB_KEY)).unwrap();
-        let (cal, _) = db.create_calendar(Some("Hidden"), None, None, None).unwrap();
+        let (cal, _) = db.create_calendar(Some("Hidden"), None, None, None, "plain").unwrap();
         let id = cal.id.clone();
         put_secret(&db, &id);
         drop(db);
@@ -2183,7 +2283,7 @@ mod tests {
     fn a_plaintext_database_is_encrypted_and_keeps_its_rows() {
         let path = enc_path();
         let db = Db::open(&path).unwrap();
-        let (cal, _) = db.create_calendar(Some("Kept"), None, None, None).unwrap();
+        let (cal, _) = db.create_calendar(Some("Kept"), None, None, None, "plain").unwrap();
         let id = cal.id.clone();
         put_secret(&db, &id);
         drop(db);

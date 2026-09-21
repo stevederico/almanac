@@ -77,6 +77,7 @@ pub struct IcsEvent {
     pub tzid: String,
     pub exdates: Vec<String>,
     pub overrides: Vec<IcsOverride>,
+    pub seal: String,
 }
 
 fn stamp(iso: &str) -> String {
@@ -204,6 +205,20 @@ fn vevent_lines(
 }
 
 fn vevent(ev: &IcsEvent) -> String {
+    if !ev.seal.is_empty() {
+        let lines = vec![
+            "BEGIN:VEVENT".to_string(),
+            format!("UID:{}", ev.uid),
+            format!("DTSTAMP:{}", stamp(&ev.updated_at)),
+            format!("X-ALMANAC-SEAL:{}", ev.seal),
+            "END:VEVENT".to_string(),
+        ];
+        return lines
+            .into_iter()
+            .map(|l| fold_line(&l))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+    }
     let mut lines = vevent_lines(
         &ev.uid,
         &ev.summary,
@@ -289,9 +304,24 @@ pub struct IcsTodo {
     pub sequence: i64,
     pub created_at: String,
     pub updated_at: String,
+    pub seal: String,
 }
 
 fn vtodo(todo: &IcsTodo) -> String {
+    if !todo.seal.is_empty() {
+        let lines = vec![
+            "BEGIN:VTODO".to_string(),
+            format!("UID:{}", todo.uid),
+            format!("DTSTAMP:{}", stamp(&todo.updated_at)),
+            format!("X-ALMANAC-SEAL:{}", todo.seal),
+            "END:VTODO".to_string(),
+        ];
+        return lines
+            .into_iter()
+            .map(|l| fold_line(&l))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+    }
     let mut lines = vec![
         "BEGIN:VTODO".to_string(),
         format!("UID:{}", todo.uid),
@@ -367,6 +397,7 @@ mod tests {
             sequence: 0,
             created_at: "2026-09-01T10:00:00.000Z".into(),
             updated_at: "2026-09-02T11:30:00.000Z".into(),
+            seal: String::new(),
         }
     }
 
@@ -480,6 +511,7 @@ mod tests {
                 tzid: String::new(),
                 exdates: Vec::new(),
                 overrides: Vec::new(),
+                seal: String::new(),
             }],
         );
         assert!(ics.starts_with("BEGIN:VCALENDAR"));
@@ -509,6 +541,7 @@ mod tests {
                 tzid: String::new(),
                 exdates: Vec::new(),
                 overrides: Vec::new(),
+                seal: String::new(),
             }],
         );
         assert!(ics.contains("DTSTART;VALUE=DATE:20260820"));
@@ -546,6 +579,7 @@ mod tests {
                     sequence: 1,
                     updated_at: "2026-09-02T17:00:00.000Z".into(),
                 }],
+                seal: String::new(),
             }],
         );
         assert!(ics.contains("BEGIN:VTIMEZONE"));
@@ -579,6 +613,7 @@ mod tests {
                 tzid: String::new(),
                 exdates: vec!["2026-10-06".into()],
                 overrides: Vec::new(),
+                seal: String::new(),
             }],
         );
         assert!(ics.contains("DTSTART;VALUE=DATE:20260922"));

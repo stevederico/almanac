@@ -13,7 +13,7 @@ use crate::time::now_iso;
 use crate::todos::{pack_tags, parse_tags, unpack_tags};
 use crate::util::prefixed_uid;
 
-const NOTE_COLS: &str = "uid, title, body, tags, pinned, sequence, created_at, updated_at";
+const NOTE_COLS: &str = "uid, title, body, tags, pinned, sequence, created_at, updated_at, seal";
 
 const MAX_TITLE: usize = 200;
 
@@ -30,6 +30,7 @@ pub struct NoteRow {
     pub sequence: i64,
     pub created_at: String,
     pub updated_at: String,
+    pub seal: String,
 }
 
 /// What a write may set. `None` leaves the stored value alone.
@@ -57,7 +58,11 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), String> {
             PRIMARY KEY (calendar_id, uid)
         );
         CREATE INDEX IF NOT EXISTS idx_notes_cal_updated ON notes(calendar_id, updated_at);",
-    )
+    )?;
+    if !crate::db::column_names(conn, "notes")?.iter().any(|c| c == "seal") {
+        conn.execute_batch("ALTER TABLE notes ADD COLUMN seal TEXT NOT NULL DEFAULT '';")?;
+    }
+    Ok(())
 }
 
 fn row_note(row: &Row) -> NoteRow {
@@ -70,6 +75,7 @@ fn row_note(row: &Row) -> NoteRow {
         sequence: row.i64(5),
         created_at: row.text(6),
         updated_at: row.text(7),
+        seal: row.text(8),
     }
 }
 
@@ -203,6 +209,52 @@ impl Db {
         Ok((saved, existing.is_none()))
     }
 
+    pub fn put_note_seal(
+        &self,
+        calendar_id: &str,
+        uid: &str,
+        seal: &str,
+    ) -> Result<(NoteRow, bool), String> {
+        if !is_uid(uid) {
+            return Err("uid must be 1-200 chars: letters, digits, . _ @ -".into());
+        }
+        let tx = self.conn.begin()?;
+        let existing = self.get_note(calendar_id, uid)?;
+        let now = now_iso();
+        let created = existing.is_none();
+        if created {
+            self.conn.execute(
+                "INSERT INTO notes (
+                    calendar_id, uid, title, body, tags, pinned, sequence, created_at, updated_at, seal
+                 ) VALUES (?1, ?2, '', '', '', 0, 0, ?3, ?3, ?4)",
+                &[
+                    Bind::Text(calendar_id),
+                    Bind::Text(uid),
+                    Bind::Text(&now),
+                    Bind::Text(seal),
+                ],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE notes
+                 SET title = '', body = '', tags = '', pinned = 0, seal = ?1,
+                     sequence = sequence + 1, updated_at = ?2
+                 WHERE calendar_id = ?3 AND uid = ?4",
+                &[
+                    Bind::Text(seal),
+                    Bind::Text(&now),
+                    Bind::Text(calendar_id),
+                    Bind::Text(uid),
+                ],
+            )?;
+        }
+        let saved = self
+            .get_note(calendar_id, uid)?
+            .ok_or_else(|| "failed to save note".to_string())?;
+        tx.commit()?;
+        Ok((saved, created))
+    }
+
     /// Change only the fields present. `Err("not found")` if there is no such note.
     pub fn patch_note(
         &self,
@@ -316,6 +368,14 @@ pub fn parse_note_fields(body: &Value, partial: bool) -> Result<NoteFields, Stri
 /// `with_body` false leaves the text out: a list of long notes would otherwise
 /// be megabytes.
 pub fn json_note(row: &NoteRow, with_body: bool) -> Value {
+    if !row.seal.is_empty() {
+        return Value::object(&[
+            ("uid", Value::String(row.uid.clone())),
+            ("seal", Value::String(row.seal.clone())),
+            ("createdAt", Value::String(row.created_at.clone())),
+            ("updatedAt", Value::String(row.updated_at.clone())),
+        ]);
+    }
     let mut pairs = vec![
         ("uid", Value::String(row.uid.clone())),
         ("title", Value::String(row.title.clone())),
@@ -399,6 +459,39 @@ fn write(state: &AppState, req: &Request, cal: &CalendarRow, path_uid: Option<&s
         Ok(v) => v,
         Err(e) => return json_err(400, &e),
     };
+    if let Some(wire) = match crate::seal::classify(&body, &cal.feed) {
+        Ok(v) => v,
+        Err(e) => return json_err(400, &e),
+    } {
+        let uid = path_uid
+            .map(str::to_string)
+            .or_else(|| body.get("uid").and_then(Value::as_str).map(str::to_string))
+            .filter(|u| !u.is_empty());
+        let Some(uid) = uid else {
+            return json_err(400, "uid is required");
+        };
+        let db = lock_db(state);
+        if !is_home(cal) {
+            let creating = match db.get_note(&cal.id, &uid) {
+                Ok(existing) => existing.is_none(),
+                Err(e) => return json_err(500, &e),
+            };
+            if creating {
+                match db.count_notes(&cal.id) {
+                    Ok(n) if n >= state.limits.max_notes => return json_err(409, "notes are full"),
+                    Ok(_) => {}
+                    Err(e) => return json_err(500, &e),
+                }
+            }
+        }
+        return match db.put_note_seal(&cal.id, &uid, &wire) {
+            Ok((row, created)) => json_response(
+                if created { 201 } else { 200 },
+                &stringify(&json_note(&row, true)),
+            ),
+            Err(e) => json_err(400, &e),
+        };
+    }
     let fields = match parse_note_fields(&body, false) {
         Ok(f) => f,
         Err(e) => return json_err(400, &e),
@@ -431,6 +524,9 @@ fn write(state: &AppState, req: &Request, cal: &CalendarRow, path_uid: Option<&s
 }
 
 fn patch(state: &AppState, req: &Request, cal: &CalendarRow, uid: &str) -> Response {
+    if cal.feed == "seal" {
+        return json_err(400, "calendar is sealed");
+    }
     let body = match parse_body(req) {
         Ok(v) => v,
         Err(e) => return json_err(400, &e),

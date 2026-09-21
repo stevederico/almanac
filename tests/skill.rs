@@ -47,9 +47,24 @@ fn documents_every_resource_the_api_serves() {
     let mode = fs::metadata(&script).expect("scripts/pull-export exists").permissions().mode();
     assert!(mode & 0o111 != 0, "scripts/pull-export is not executable");
     // The rules an agent trips over.
-    for word in ["User-Agent", "PUT", "429", "shown once"] {
+    for word in ["User-Agent", "PUT", "429", "shown once", "X-ALMANAC-SEAL"] {
         assert!(text.contains(word), "the skill never mentions {word}");
     }
+    assert!(text.contains("seal --cal"), "the skill does not show how to seal");
+    assert!(text.contains("open --cal"), "the skill does not show how to open");
+    assert!(
+        text.contains("Do not set `feed` to `plain` unless he asks"),
+        "the skill may opt a calendar into a plaintext feed"
+    );
+    assert!(text.contains("scripts/reseal"), "the skill never mentions reseal");
+    let reseal = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/reseal");
+    let mode = fs::metadata(&reseal).expect("scripts/reseal exists").permissions().mode();
+    assert!(mode & 0o111 != 0, "scripts/reseal is not executable");
+    let reseal_text = fs::read_to_string(&reseal).unwrap();
+    assert!(
+        reseal_text.contains("name the calendar"),
+        "reseal must refuse to pick a calendar on its own"
+    );
 }
 
 #[test]

@@ -315,10 +315,10 @@ fn pull_export_saves_a_private_copy_prunes_old_ones_and_never_saves_a_bad_respon
     let _ = std::fs::remove_file(&db);
     let (_server, port) = start_server(db.to_str().unwrap());
 
-    // A calendar with one note in it.
+    // A calendar with one note in it. Plain, so the note is stored as fields.
     let created = exchange(
         port,
-        b"POST /calendars HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+        b"POST /calendars HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 16\r\n\r\n{\"feed\":\"plain\"}",
     );
     let body = created.split("\r\n\r\n").nth(1).unwrap_or_default();
     let field = |name: &str| -> String {

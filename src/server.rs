@@ -160,8 +160,8 @@ fn create_calendar(state: &AppState, req: &Request) -> Response {
         return too_many(retry);
     }
     let ctype = req.header("content-type");
-    let name = match parse_calendar_name(ctype, &req.body) {
-        Ok(name) => name,
+    let (name, feed) = match parse_calendar_create(ctype, &req.body) {
+        Ok(parsed) => parsed,
         Err(e) => return json_err(400, &e),
     };
     let db = lock_db(state);
@@ -170,7 +170,7 @@ fn create_calendar(state: &AppState, req: &Request) -> Response {
         Ok(_) => {}
         Err(e) => return json_err(500, &e),
     }
-    let (saved, key) = match db.create_calendar(name.as_deref(), None, None, None) {
+    let (saved, key) = match db.create_calendar(name.as_deref(), None, None, None, &feed) {
         Ok(created) => created,
         Err(e) => return json_err(400, &e),
     };
@@ -194,23 +194,32 @@ fn create_calendar(state: &AppState, req: &Request) -> Response {
     json_response(201, &stringify(&view))
 }
 
-fn parse_calendar_name(ctype: &str, body: &[u8]) -> Result<Option<String>, String> {
+fn parse_calendar_create(ctype: &str, body: &[u8]) -> Result<(Option<String>, String), String> {
     if ctype.contains("application/json") {
         let text = std::str::from_utf8(body).map_err(|_| "body must be valid JSON")?;
         if text.trim().is_empty() {
-            return Ok(None);
+            return Ok((None, "seal".into()));
         }
         let value = parse_json(text).map_err(|_| "body must be valid JSON")?;
         if !matches!(value, Value::Object(_)) {
             return Err("body must be an object".into());
         }
-        return match value.get("name") {
-            None | Some(Value::Null) => Ok(None),
-            Some(v) => v
-                .as_str()
-                .map(|s| Some(s.to_string()))
-                .ok_or_else(|| "name must be a string".to_string()),
+        let name = match value.get("name") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                v.as_str()
+                    .ok_or_else(|| "name must be a string".to_string())?
+                    .to_string(),
+            ),
         };
+        let feed = match value.get("feed") {
+            None | Some(Value::Null) => "seal".to_string(),
+            Some(v) => crate::seal::feed_mode(
+                v.as_str().ok_or_else(|| "feed must be seal or plain".to_string())?,
+            )?
+            .to_string(),
+        };
+        return Ok((name, feed));
     }
     if ctype.contains("application/x-www-form-urlencoded") {
         let text = String::from_utf8_lossy(body);
@@ -219,11 +228,11 @@ fn parse_calendar_name(ctype: &str, body: &[u8]) -> Result<Option<String>, Strin
             let key = it.next().unwrap_or("");
             let val = it.next().unwrap_or("");
             if key == "name" {
-                return Ok(Some(urlencoding_decode(val)));
+                return Ok((Some(urlencoding_decode(val)), "seal".into()));
             }
         }
     }
-    Ok(None)
+    Ok((None, "seal".into()))
 }
 
 pub(crate) fn urlencoding_decode(value: &str) -> String {
@@ -323,6 +332,7 @@ fn feed(state: &AppState, token: &str) -> Response {
                     published: n.created_at,
                     content: n.body,
                     tags: n.tags,
+                    seal: n.seal,
                 })
                 .collect();
             (
@@ -351,6 +361,7 @@ fn feed(state: &AppState, token: &str) -> Response {
                     sequence: t.sequence,
                     created_at: t.created_at,
                     updated_at: t.updated_at,
+                    seal: t.seal,
                 })
                 .collect();
             ("todos.ics", "text/calendar; charset=utf-8", render_todos(&name, &items))
@@ -377,6 +388,7 @@ fn render_events(name: &str, events: Vec<EventRow>) -> String {
             updated_at: ev.updated_at,
             rrule: ev.rrule,
             tzid: ev.tzid,
+            seal: ev.seal,
             exdates: ev.exdates,
             overrides: ev
                 .overrides
@@ -404,6 +416,7 @@ fn scoped(state: &AppState, req: &Request, method: &str, rest: &str) -> Response
         return match method {
             "GET" => calendar_info(state, req, rest),
             "DELETE" => delete_calendar(state, req, rest),
+            "PATCH" => set_calendar_feed(state, req, rest),
             _ => json_err(404, "not found"),
         };
     };
@@ -527,6 +540,32 @@ fn delete_calendar(state: &AppState, req: &Request, id: &str) -> Response {
     match lock_db(state).delete_calendar(&cal.id) {
         Ok(true) => Response::new(204),
         Ok(false) => json_err(404, "not found"),
+        Err(e) => json_err(500, &e),
+    }
+}
+
+fn set_calendar_feed(state: &AppState, req: &Request, id: &str) -> Response {
+    let cal = match gate(state, req, id, "PATCH") {
+        Ok(cal) => cal,
+        Err(res) => return res,
+    };
+    let body = match parse_body(req) {
+        Ok(v) => v,
+        Err(e) => return json_err(400, &e),
+    };
+    let mode = match body.get("feed").and_then(Value::as_str) {
+        Some(mode) => mode,
+        None => return json_err(400, "feed must be seal or plain"),
+    };
+    let db = lock_db(state);
+    let saved = match db.set_feed(&cal.id, mode) {
+        Ok(row) => row,
+        Err(e) if e == "not found" => return json_err(404, &e),
+        Err(e) => return json_err(400, &e),
+    };
+    let base = request_base(req, &state.public_base);
+    match calendar_view(&db, &saved, None, &base) {
+        Ok(v) => json_response(200, &stringify(&v)),
         Err(e) => json_err(500, &e),
     }
 }
@@ -694,6 +733,35 @@ fn write_event(state: &AppState, req: &Request, cal: &CalendarRow, uid: Option<&
         Ok(v) => v,
         Err(e) => return json_err(400, &e),
     };
+    if let Some(wire) = match crate::seal::classify(&body, &cal.feed) {
+        Ok(v) => v,
+        Err(e) => return json_err(400, &e),
+    } {
+        let uid = match uid.or_else(|| body.get("uid").and_then(Value::as_str)) {
+            Some(uid) if !uid.is_empty() => uid.to_string(),
+            _ => return json_err(400, "uid is required"),
+        };
+        let db = lock_db(state);
+        if !is_home(cal) {
+            let creating = match db.get_event(&cal.id, &uid) {
+                Ok(existing) => existing.is_none(),
+                Err(e) => return json_err(500, &e),
+            };
+            if creating {
+                match db.count_events(&cal.id) {
+                    Ok(n) if n >= state.limits.max_events => return json_err(409, "calendar is full"),
+                    Ok(_) => {}
+                    Err(e) => return json_err(500, &e),
+                }
+            }
+        }
+        return match db.put_event_seal(&cal.id, &uid, &wire) {
+            Ok((saved, created)) => {
+                json_response(if created { 201 } else { 200 }, &stringify(&json_event(&saved)))
+            }
+            Err(e) => json_err(400, &e),
+        };
+    }
     let mut input = match parse_event_input(&body) {
         Ok(i) => i,
         Err(e) => return json_err(400, &e),
@@ -730,6 +798,9 @@ fn write_event(state: &AppState, req: &Request, cal: &CalendarRow, uid: Option<&
 }
 
 fn patch_event(state: &AppState, req: &Request, cal: &CalendarRow, uid: &str) -> Response {
+    if cal.feed == "seal" {
+        return json_err(400, "calendar is sealed");
+    }
     let body = match parse_body(req) {
         Ok(v) => v,
         Err(e) => return json_err(400, &e),
@@ -762,6 +833,9 @@ fn exception(
     uid: &str,
     exdate: bool,
 ) -> Response {
+    if cal.feed == "seal" {
+        return json_err(400, "calendar is sealed");
+    }
     let body = match parse_body(req) {
         Ok(v) => v,
         Err(e) => return json_err(400, &e),

@@ -20,4 +20,5 @@ fn main() {
         }
     }
     println!("cargo:rustc-link-lib=sqlcipher");
+    println!("cargo:rustc-link-lib=crypto");
 }

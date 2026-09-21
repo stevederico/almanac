@@ -128,7 +128,7 @@ mod tests {
         let dir = scratch();
         let db_path = dir.join("calendar.db");
         let db = Db::open(&db_path).unwrap();
-        let (cal, _) = db.create_calendar(Some("Kept"), None, None, None).unwrap();
+        let (cal, _) = db.create_calendar(Some("Kept"), None, None, None, "plain").unwrap();
 
         let file = run_once(&db_path, &dir.join("backups"), 7, None).unwrap();
         let copy = Db::open(&file).unwrap();
@@ -188,7 +188,7 @@ mod tests {
         let key = "backup-key";
         let body = "note-body-plaintext-sentinel-9f3a";
         let db = Db::open_with(&db_path, Some(key)).unwrap();
-        let (cal, _) = db.create_calendar(Some("Kept"), None, None, None).unwrap();
+        let (cal, _) = db.create_calendar(Some("Kept"), None, None, None, "plain").unwrap();
         db.upsert_note(
             &cal.id,
             Some("n"),

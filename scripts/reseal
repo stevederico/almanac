@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Rewrite one calendar's plaintext items into seals, then set its feed to seal.
+
+Name the calendar. This will not pick one from the credentials file on its own.
+The calendar's subscribe URL then returns shells until a client opens them.
+
+  scripts/reseal cal_...
+
+ALMANAC_BASE, ALMANAC_CREDS, and ALMANAC_BIN match scripts/pull-export.
+The key is read by `almanac seal` and is never printed.
+"""
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+
+def fail(message):
+    print(f"reseal: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def almanac_bin():
+    chosen = os.environ.get("ALMANAC_BIN", "").strip()
+    if chosen:
+        return chosen
+    found = shutil.which("almanac")
+    if found:
+        return found
+    root = pathlib.Path(__file__).resolve().parent.parent / "target"
+    for name in ("release", "debug"):
+        built = root / name / "almanac"
+        if built.is_file() and os.access(built, os.X_OK):
+            return str(built)
+    fail("sealed items need the almanac binary")
+
+
+def request(base, key, method, path, payload=None):
+    data = None if payload is None else json.dumps(payload).encode()
+    headers = {"Authorization": f"Bearer {key}", "User-Agent": "almanac-reseal/1"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(f"{base}{path}", data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            raw = response.read()
+            code = response.status
+    except urllib.error.HTTPError as e:
+        fail(f"the server answered {e.code}")
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        fail(f"could not reach {base}: {getattr(e, 'reason', e)}")
+    if not raw:
+        return code, None
+    try:
+        return code, json.loads(raw)
+    except ValueError:
+        fail("the server did not return JSON")
+
+
+def seal_item(binary, cal_id, kind, uid, item):
+    plain = {
+        k: v
+        for k, v in item.items()
+        if k not in ("createdAt", "updatedAt", "sequence", "seal")
+    }
+    proc = subprocess.run(
+        [binary, "seal", "--cal", cal_id, "--kind", kind, "--uid", uid],
+        input=json.dumps(plain).encode(),
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        fail("a seal could not be written")
+    return proc.stdout.decode().strip()
+
+
+def main():
+    if len(sys.argv) != 2 or not sys.argv[1].strip():
+        fail("name the calendar")
+    cal_id = sys.argv[1].strip()
+    base = os.environ.get("ALMANAC_BASE", "https://almanac.dottie.ai").rstrip("/")
+    creds = pathlib.Path(
+        os.environ.get("ALMANAC_CREDS", "~/.config/almanac/hosted-calendars.json")
+    ).expanduser()
+    try:
+        rows = json.loads(creds.read_text())
+        if isinstance(rows, dict):
+            rows = [rows]
+        key = next(row["key"] for row in rows if row.get("id") == cal_id)
+    except (OSError, ValueError, KeyError, TypeError, StopIteration):
+        fail("could not read that calendar's key")
+
+    binary = almanac_bin()
+    _, events = request(base, key, "GET", f"/v1/c/{cal_id}/events")
+    _, todos = request(base, key, "GET", f"/v1/c/{cal_id}/todos")
+    _, notes = request(base, key, "GET", f"/v1/c/{cal_id}/notes?body=true")
+    groups = (
+        ("event", events.get("events") if isinstance(events, dict) else None),
+        ("todo", todos.get("todos") if isinstance(todos, dict) else None),
+        ("note", notes.get("notes") if isinstance(notes, dict) else None),
+    )
+    path = {"event": "events", "todo": "todos", "note": "notes"}
+    sealed = 0
+    for kind, items in groups:
+        if not isinstance(items, list):
+            fail("the list was not complete")
+        for item in items:
+            if not isinstance(item, dict) or not item.get("uid"):
+                fail("the list was not complete")
+            if item.get("seal"):
+                continue
+            uid = item["uid"]
+            wire = seal_item(binary, cal_id, kind, uid, item)
+            request(
+                base,
+                key,
+                "PUT",
+                f"/v1/c/{cal_id}/{path[kind]}/{uid}",
+                {"seal": wire},
+            )
+            sealed += 1
+    request(base, key, "PATCH", f"/v1/c/{cal_id}", {"feed": "seal"})
+    print(f"resealed {sealed} items on {cal_id}")
+
+
+if __name__ == "__main__":
+    main()

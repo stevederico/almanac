@@ -16,6 +16,21 @@ use almanac::server::{handle, AppState};
 use almanac::time::now_iso;
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(cmd) = args.first() {
+        if cmd == "seal" || cmd == "open" {
+            match almanac::seal::run(cmd, &args[1..]) {
+                Ok(out) => {
+                    println!("{out}");
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
     let env_path = Path::new(".env");
     if let Err(e) = load_env_file(env_path) {
         eprintln!("{e}");

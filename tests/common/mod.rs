@@ -46,7 +46,7 @@ pub fn create(app: &AppState) -> Cal {
         Request::new("POST", "/calendars")
             .with_header("content-type", "application/json")
             .with_header("accept", "application/json")
-            .with_body(b"{\"name\":\"Trip\"}".to_vec()),
+            .with_body(br#"{"name":"Trip","feed":"plain"}"#.to_vec()),
     );
     assert_eq!(status, 201, "{body}");
     let v = json(&body);

@@ -110,6 +110,14 @@ curl -sS -X DELETE "$WRITE/standup/overrides" \
   -d '{"recurrenceId":"2026-10-13T09:00:00"}'
 ```
 
+## Seals
+
+New calendars default to `feed: "seal"`. Each event, todo, and note is one `alm1.` ciphertext of its JSON, sealed with that calendar's write key. The server stores the blob and the uid. It does not have the key. `PUT` body is `{"seal":"alm1.…"}`. `GET` returns `uid`, `seal`, `createdAt`, `updatedAt`. Feeds for a sealed row are a shell with `UID` and `X-ALMANAC-SEAL` only.
+
+`feed: "plain"` is today's field API and a readable ICS, VTODO, or Atom feed. `PATCH /v1/c/{id}` with `{"feed":"seal"}` or `{"feed":"plain"}` sets the mode. Existing rows stay as they are until a client that has the key rewrites them. `scripts/reseal` does that for one calendar id passed on the command line.
+
+`almanac seal` and `almanac open` read the key from `~/.config/almanac/hosted-calendars.json` and do not print it.
+
 ## Todos
 
 Same key, own endpoints, own feed.

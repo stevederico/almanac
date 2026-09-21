@@ -123,7 +123,7 @@ fn isolates_two_calendars() {
         Request::new("POST", "/calendars")
             .with_header("content-type", "application/json")
             .with_header("accept", "application/json")
-            .with_body(b"{}".to_vec())
+            .with_body(br#"{"feed":"plain"}"#.to_vec())
     };
     let (_, a_body, _) = send(&app, mk());
     let (_, b_body, _) = send(&app, mk());
@@ -172,7 +172,7 @@ fn created(app: &AppState, name: &str) -> Value {
         Request::new("POST", "/calendars")
             .with_header("content-type", "application/json")
             .with_header("accept", "application/json")
-            .with_body(format!(r#"{{"name":"{name}"}}"#).into_bytes()),
+            .with_body(format!(r#"{{"name":"{name}","feed":"plain"}}"#).into_bytes()),
     );
     parse(std::str::from_utf8(&body).unwrap()).unwrap()
 }
@@ -470,7 +470,7 @@ fn writes_a_series_with_exceptions_on_both_url_trees() {
         Request::new("POST", "/calendars")
             .with_header("content-type", "application/json")
             .with_header("accept", "application/json")
-            .with_body(b"{}".to_vec()),
+            .with_body(br#"{"feed":"plain"}"#.to_vec()),
     );
     let created = parse(std::str::from_utf8(&created_body).unwrap()).unwrap();
     let id = created.get("id").and_then(Value::as_str).unwrap();
@@ -787,7 +787,7 @@ fn create(app: &AppState, xff: Option<&str>) -> (u16, almanac::http::Response) {
     let mut req = Request::new("POST", "/calendars")
         .with_header("content-type", "application/json")
         .with_header("accept", "application/json")
-        .with_body(b"{}".to_vec());
+        .with_body(br#"{"feed":"plain"}"#.to_vec());
     if let Some(xff) = xff {
         req = req.with_header("x-forwarded-for", xff);
     }
@@ -1149,4 +1149,96 @@ fn llms_txt_documents_todos() {
     assert!(text.contains("notes.subscribe"));
     assert!(text.contains("DELETE /v1/c/{id}"));
     assert!(text.contains("home calendar cannot be deleted"));
+    assert!(text.contains("alm1."));
+    assert!(text.contains("X-ALMANAC-SEAL"));
+}
+
+#[test]
+fn a_sealed_calendar_hides_events_todos_and_notes_from_the_feeds() {
+    let app = test_app();
+    let (status, body, _) = send(
+        &app,
+        Request::new("POST", "/calendars")
+            .with_header("content-type", "application/json")
+            .with_header("accept", "application/json")
+            .with_body(br#"{"name":"Sealed"}"#.to_vec()),
+    );
+    assert_eq!(status, 201, "{body:?}");
+    let created = parse(std::str::from_utf8(&body).unwrap()).unwrap();
+    let id = created.get("id").and_then(Value::as_str).unwrap();
+    let key = created.get("key").and_then(Value::as_str).unwrap();
+    assert_eq!(created.get("feed").and_then(Value::as_str), Some("seal"));
+    let feed = |kind: &str| {
+        created
+            .get(kind)
+            .and_then(|v| v.get("subscribe"))
+            .and_then(Value::as_str)
+            .unwrap()
+            .strip_prefix(BASE)
+            .unwrap()
+            .to_string()
+    };
+    let events_feed = created
+        .get("subscribe")
+        .and_then(Value::as_str)
+        .unwrap()
+        .strip_prefix(BASE)
+        .unwrap()
+        .to_string();
+
+    let sentinel = "note-body-plaintext-sentinel-9f3a";
+    let put = |path: &str, kind: &str, uid: &str, plain: &str| {
+        let wire = almanac::seal::seal(key, id, kind, uid, plain.as_bytes()).unwrap();
+        assert!(!wire.contains(sentinel));
+        let body = format!(r#"{{"seal":"{wire}"}}"#);
+        let (status, raw, _) = send(
+            &app,
+            Request::new("PUT", path)
+                .with_header("authorization", &format!("Bearer {key}"))
+                .with_header("content-type", "application/json")
+                .with_body(body.into_bytes()),
+        );
+        assert_eq!(status, 201, "{raw:?}");
+        let saved = parse(std::str::from_utf8(&raw).unwrap()).unwrap();
+        assert_eq!(saved.get("seal").and_then(Value::as_str), Some(wire.as_str()));
+        assert!(saved.get("summary").is_none());
+        assert!(saved.get("title").is_none());
+        assert!(saved.get("body").is_none());
+    };
+    put(
+        &format!("/v1/c/{id}/events/dentist"),
+        "event",
+        "dentist",
+        &format!(r#"{{"summary":"{sentinel}","start":"2026-08-18T09:00:00-07:00"}}"#),
+    );
+    put(
+        &format!("/v1/c/{id}/todos/milk"),
+        "todo",
+        "milk",
+        &format!(r#"{{"title":"{sentinel}","due":"2026-10-01"}}"#),
+    );
+    put(
+        &format!("/v1/c/{id}/notes/ideas"),
+        "note",
+        "ideas",
+        &format!(r#"{{"title":"Ideas","body":"{sentinel}"}}"#),
+    );
+
+    let (status, _, _) = send(
+        &app,
+        Request::new("PUT", &format!("/v1/c/{id}/events/nope"))
+            .with_header("authorization", &format!("Bearer {key}"))
+            .with_header("content-type", "application/json")
+            .with_body(br#"{"summary":"Visible","start":"2026-08-18T09:00:00Z"}"#.to_vec()),
+    );
+    assert_eq!(status, 400);
+
+    for path in [events_feed, feed("todos"), feed("notes")] {
+        let (status, raw, _) = send(&app, Request::new("GET", &path));
+        assert_eq!(status, 200, "{path}");
+        let text = String::from_utf8(raw).unwrap();
+        assert!(text.contains("X-ALMANAC-SEAL"), "{path}: {text}");
+        assert!(!text.contains(sentinel), "{path} leaked the plaintext");
+        assert!(!text.contains("SUMMARY:"), "{path} still has a summary");
+    }
 }

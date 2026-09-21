@@ -1,3 +1,10 @@
+0.25.0
+
+  Add item seals
+  Shell sealed feeds
+  Open sealed backups
+  Add reseal command
+
 0.24.0
 
   Link SQLCipher 4.18

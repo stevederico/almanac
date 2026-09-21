@@ -10,6 +10,7 @@ pub mod landing;
 pub mod limits;
 pub mod notes;
 pub mod rrule;
+pub mod seal;
 pub mod server;
 pub mod sha256;
 pub mod sqlite;
