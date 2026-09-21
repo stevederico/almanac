@@ -1,4 +1,5 @@
 use std::io::{BufReader, BufWriter};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -8,7 +9,7 @@ use std::time::Duration;
 
 use almanac::db::Db;
 use almanac::env::{load_env_file, read_config_from_os};
-use almanac::http::{read_request, write_response};
+use almanac::http::{json_response, read_request, write_response};
 use almanac::json::{stringify, Value};
 use almanac::server::{handle, AppState};
 use almanac::time::now_iso;
@@ -155,7 +156,12 @@ fn serve(stream: TcpStream, state: &AppState) {
             return;
         }
     };
-    let res = handle(state, &req);
+    // A panic in a handler answers 500 instead of dropping the socket with no
+    // reply. The DB lock recovers from poisoning, so the next request is fine.
+    let res = catch_unwind(AssertUnwindSafe(|| handle(state, &req))).unwrap_or_else(|_| {
+        eprintln!("almanac: handler panicked: {} {}", req.method, req.path);
+        json_response(500, r#"{"error":"internal error"}"#)
+    });
     let mut writer = BufWriter::new(stream);
     let _ = write_response(&mut writer, &res);
 }

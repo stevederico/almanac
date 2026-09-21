@@ -436,3 +436,133 @@ fn writes_a_series_with_exceptions_on_both_url_trees() {
     let once_end = home_feed[once_at..].find("END:VEVENT").unwrap();
     assert!(!home_feed[once_at..once_at + once_end].contains("RRULE:"));
 }
+
+// ---- crash / poison regressions -------------------------------------------
+
+fn home_req(method: &str, path: &str, body: &str) -> Request {
+    Request::new(method, path)
+        .with_header("authorization", &format!("Bearer {KEY}"))
+        .with_header("content-type", "application/json")
+        .with_body(body.as_bytes().to_vec())
+}
+
+/// Every request that follows a hostile one must still be served.
+fn assert_db_alive(app: &AppState) {
+    let (status, _, _) = send(app, auth_get("/v1/events"));
+    assert_eq!(status, 200, "db lock is unusable after a hostile request");
+    let (status, _, _) = send(app, Request::new("GET", "/health"));
+    assert_eq!(status, 200);
+}
+
+/// Swap the ASCII char at every offset for a 2-byte one, so a fixed-offset
+/// slice lands inside a char. Also insert it, shifting every later byte.
+fn mutations(valid: &str) -> Vec<String> {
+    let chars: Vec<char> = valid.chars().collect();
+    let mut out = Vec::new();
+    for i in 0..chars.len() {
+        let mut swapped = chars.clone();
+        swapped[i] = 'é';
+        out.push(swapped.into_iter().collect());
+        let mut inserted = chars.clone();
+        inserted.insert(i, 'é');
+        out.push(inserted.into_iter().collect());
+    }
+    out
+}
+
+#[test]
+fn deep_json_does_not_kill_the_process() {
+    let app = test_app();
+    for body in ["[".repeat(200_000), "{\"a\":".repeat(200_000)] {
+        let (status, _, _) = send(
+            &app,
+            Request::new("POST", "/calendars")
+                .with_header("content-type", "application/json")
+                .with_body(body.clone().into_bytes()),
+        );
+        assert!(status == 201 || status == 400, "status {status}");
+        let (status, _, _) = send(&app, home_req("PUT", "/v1/events/deep", &body));
+        assert_eq!(status, 400);
+    }
+    assert_db_alive(&app);
+}
+
+#[test]
+fn non_ascii_datetimes_are_400_not_a_panic() {
+    let app = test_app();
+    for bad in mutations("2026-09-22T09:00:00.000Z") {
+        for field in ["start", "end"] {
+            let other = if field == "start" { "end" } else { "start" };
+            let other_val = if field == "start" {
+                "2026-09-23T09:00:00.000Z"
+            } else {
+                "2026-09-21T09:00:00.000Z"
+            };
+            let body =
+                format!(r#"{{"summary":"x","{field}":"{bad}","{other}":"{other_val}"}}"#);
+            let (status, _, _) = send(&app, home_req("PUT", "/v1/events/mb", &body));
+            assert_eq!(status, 400, "{field}={bad:?}");
+        }
+    }
+    assert_db_alive(&app);
+}
+
+#[test]
+fn non_ascii_wall_times_and_recurrence_ids_are_400() {
+    let app = test_app();
+    let series = r#"{"summary":"S","start":"2026-09-22T09:00:00-07:00","end":"2026-09-22T09:15:00-07:00","timeZone":"America/Los_Angeles","rrule":"FREQ=WEEKLY;BYDAY=TU"}"#;
+    let (status, _, _) = send(&app, home_req("PUT", "/v1/events/s", series));
+    assert_eq!(status, 201);
+    for bad in mutations("2026-10-06T09:00:00") {
+        // Recurring start: goes through parse_wall.
+        let body = series.replace("2026-09-22T09:00:00-07:00", &bad);
+        let (status, _, _) = send(&app, home_req("PUT", "/v1/events/s2", &body));
+        assert_eq!(status, 400, "series start={bad:?}");
+        for path in ["/v1/events/s/exdates", "/v1/events/s/overrides"] {
+            let body = format!(
+                r#"{{"recurrenceId":"{bad}","start":"2026-10-06T10:00:00","end":"2026-10-06T10:15:00"}}"#
+            );
+            let (status, _, _) = send(&app, home_req("PUT", path, &body));
+            assert_eq!(status, 400, "{path} recurrenceId={bad:?}");
+            let (status, _, _) = send(&app, home_req("DELETE", path, &body));
+            assert!(status == 400 || status == 404, "{path} delete {status}");
+        }
+    }
+    assert_db_alive(&app);
+}
+
+#[test]
+fn a_poisoned_db_lock_does_not_brick_the_service() {
+    let app = test_app();
+    let poisoner = app.clone();
+    let _ = std::thread::spawn(move || {
+        let _guard = poisoner.db.lock().unwrap();
+        panic!("simulated handler panic while holding the db lock");
+    })
+    .join();
+    assert!(app.db.is_poisoned());
+    assert_db_alive(&app);
+    let (status, _, _) = send(
+        &app,
+        home_req(
+            "PUT",
+            "/v1/events/after",
+            r#"{"summary":"ok","start":"2026-09-22"}"#,
+        ),
+    );
+    assert_eq!(status, 201);
+}
+
+#[test]
+fn form_names_with_stray_percent_signs_do_not_panic() {
+    let app = test_app();
+    for name in ["%", "%é", "a%4", "%zz", "%%41", "é%é%", "%41%42+x"] {
+        let (status, _, _) = send(
+            &app,
+            Request::new("POST", "/calendars")
+                .with_header("content-type", "application/x-www-form-urlencoded")
+                .with_body(format!("name={name}").into_bytes()),
+        );
+        assert_eq!(status, 201, "{name}");
+    }
+}

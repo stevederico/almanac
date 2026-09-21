@@ -115,6 +115,14 @@ impl Db {
         Ok(Self { conn })
     }
 
+    /// Cheap liveness probe for `/health`.
+    pub fn ping(&self) -> Result<(), String> {
+        self.conn
+            .query_row("SELECT 1", &[], |row| row.i64(0))?
+            .map(|_| ())
+            .ok_or_else(|| "db did not answer".to_string())
+    }
+
     pub fn get_calendar(&self, id: &str) -> Result<Option<CalendarRow>, String> {
         self.conn.query_row(
             "SELECT id, feed_token, agent_key, name, created_at FROM calendars WHERE id = ?1",
@@ -937,7 +945,7 @@ fn finalize_recurrence(
 fn parse_wall(value: &str) -> Result<String, String> {
     let err = "start must be an ISO-8601 datetime";
     let bytes = value.as_bytes();
-    if bytes.len() < 19 || !is_ymd(&value[..10]) || bytes[10] != b'T' {
+    if !value.is_ascii() || bytes.len() < 19 || !is_ymd(&value[..10]) || bytes[10] != b'T' {
         return Err(err.into());
     }
     let hh: u32 = value[11..13].parse().map_err(|_| err.to_string())?;
@@ -964,6 +972,9 @@ fn parse_wall(value: &str) -> Result<String, String> {
 }
 
 fn add_wall_hour(wall: &str) -> Result<String, String> {
+    if !wall.is_ascii() || wall.len() < 19 {
+        return Err("start must be an ISO-8601 datetime".into());
+    }
     let (date, time) = wall
         .split_once('T')
         .ok_or_else(|| "start must be an ISO-8601 datetime".to_string())?;
@@ -1000,6 +1011,7 @@ pub fn normalize_recurrence_id(value: &str, all_day: bool) -> Result<String, Str
         return Err("recurrenceId must be YYYY-MM-DD".into());
     }
     if value.len() == 19
+        && value.is_ascii()
         && !value.contains('Z')
         && !value.contains('+')
         && !value[10..].contains('-')

@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use crate::db::{
@@ -18,6 +18,16 @@ const MASCOT_WEBP: &[u8] = include_bytes!("../public/mascot.webp");
 pub struct AppState {
     pub db: Arc<Mutex<Db>>,
     pub public_base: String,
+}
+
+/// Lock the database, surviving a poisoned mutex.
+///
+/// A panic while a handler held the guard used to poison it, and every later
+/// `.expect("db")` then panicked too: one bad request took every DB route down
+/// until a restart. The connection holds no half-applied state we rely on, so
+/// recovering the guard is safe.
+fn lock_db(state: &AppState) -> MutexGuard<'_, Db> {
+    state.db.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub fn handle(state: &AppState, req: &Request) -> Response {
@@ -41,10 +51,7 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
     let path = req.path.split('?').next().unwrap_or(req.path.as_str());
     match (method, path) {
         ("GET", "/") => home(state, req),
-        ("GET", "/health") => json_response(
-            200,
-            &stringify(&Value::object(&[("ok", Value::Bool(true))])),
-        ),
+        ("GET", "/health") => health(state),
         ("GET", "/llms.txt") => {
             let base = request_base(req, &state.public_base);
             text_response(200, "text/plain; charset=utf-8", llms_txt(&base))
@@ -69,6 +76,13 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
     }
 }
 
+fn health(state: &AppState) -> Response {
+    match lock_db(state).ping() {
+        Ok(()) => json_response(200, &stringify(&Value::object(&[("ok", Value::Bool(true))]))),
+        Err(e) => json_err(503, &e),
+    }
+}
+
 fn home(state: &AppState, req: &Request) -> Response {
     let base = request_base(req, &state.public_base);
     if wants_html(req) {
@@ -81,7 +95,7 @@ fn home(state: &AppState, req: &Request) -> Response {
 fn create_calendar(state: &AppState, req: &Request) -> Response {
     let ctype = req.header("content-type");
     let name = parse_calendar_name(ctype, &req.body);
-    let db = state.db.lock().expect("db");
+    let db = lock_db(state);
     let saved = match db.create_calendar(name.as_deref(), None, None, None) {
         Ok(row) => row,
         Err(e) => return json_err(400, &e),
@@ -116,27 +130,38 @@ fn parse_calendar_name(ctype: &str, body: &[u8]) -> Option<String> {
 }
 
 fn urlencoding_decode(value: &str) -> String {
-    let plus = value.replace('+', " ");
-    let mut out = Vec::new();
-    let bytes = plus.as_bytes();
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&plus[i + 1..i + 3], 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' => match bytes
+                .get(i + 1)
+                .zip(bytes.get(i + 2))
+                .and_then(|(hi, lo)| hex_pair(*hi, *lo))
+            {
+                Some(b) => {
+                    out.push(b);
+                    i += 2;
+                }
+                None => out.push(b'%'),
+            },
+            b => out.push(b),
         }
-        out.push(bytes[i]);
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
 }
 
+fn hex_pair(hi: u8, lo: u8) -> Option<u8> {
+    let digit = |b: u8| (b as char).to_digit(16);
+    Some((digit(hi)? * 16 + digit(lo)?) as u8)
+}
+
 fn feed(state: &AppState, token: &str) -> Response {
     let token = feed_token_of(token);
-    let db = state.db.lock().expect("db");
+    let db = lock_db(state);
     let cal = match db.get_calendar_by_feed_token(&token) {
         Ok(Some(cal)) if safe_equal(&token, &cal.feed_token) => cal,
         _ => return json_err(404, "not found"),
@@ -222,7 +247,7 @@ fn scoped(state: &AppState, req: &Request, method: &str, rest: &str) -> Response
 }
 
 fn calendar_info(state: &AppState, req: &Request, id: &str) -> Response {
-    let db = state.db.lock().expect("db");
+    let db = lock_db(state);
     let Some(cal) = calendar_auth(&db, id, req.header("authorization")) else {
         return json_err(401, "unauthorized");
     };
@@ -231,7 +256,7 @@ fn calendar_info(state: &AppState, req: &Request, id: &str) -> Response {
 }
 
 fn list_events(state: &AppState, req: &Request, id: &str) -> Response {
-    let db = state.db.lock().expect("db");
+    let db = lock_db(state);
     let Some(cal) = calendar_auth(&db, id, req.header("authorization")) else {
         return json_err(401, "unauthorized");
     };
@@ -248,7 +273,7 @@ fn list_events(state: &AppState, req: &Request, id: &str) -> Response {
 }
 
 fn get_event(state: &AppState, req: &Request, id: &str, uid: &str) -> Response {
-    let db = state.db.lock().expect("db");
+    let db = lock_db(state);
     let Some(cal) = calendar_auth(&db, id, req.header("authorization")) else {
         return json_err(401, "unauthorized");
     };
@@ -260,7 +285,7 @@ fn get_event(state: &AppState, req: &Request, id: &str, uid: &str) -> Response {
 }
 
 fn post_event(state: &AppState, req: &Request, id: &str) -> Response {
-    let db = state.db.lock().expect("db");
+    let db = lock_db(state);
     let Some(cal) = calendar_auth(&db, id, req.header("authorization")) else {
         return json_err(401, "unauthorized");
     };
@@ -272,7 +297,7 @@ fn post_event(state: &AppState, req: &Request, id: &str) -> Response {
 }
 
 fn put_event(state: &AppState, req: &Request, id: &str, uid: &str) -> Response {
-    let db = state.db.lock().expect("db");
+    let db = lock_db(state);
     let Some(cal) = calendar_auth(&db, id, req.header("authorization")) else {
         return json_err(401, "unauthorized");
     };
@@ -284,7 +309,7 @@ fn put_event(state: &AppState, req: &Request, id: &str, uid: &str) -> Response {
 }
 
 fn patch_event(state: &AppState, req: &Request, id: &str, uid: &str) -> Response {
-    let db = state.db.lock().expect("db");
+    let db = lock_db(state);
     let Some(cal) = calendar_auth(&db, id, req.header("authorization")) else {
         return json_err(401, "unauthorized");
     };
@@ -304,7 +329,7 @@ fn patch_event(state: &AppState, req: &Request, id: &str, uid: &str) -> Response
 }
 
 fn delete_event(state: &AppState, req: &Request, id: &str, uid: &str) -> Response {
-    let db = state.db.lock().expect("db");
+    let db = lock_db(state);
     let Some(cal) = calendar_auth(&db, id, req.header("authorization")) else {
         return json_err(401, "unauthorized");
     };
@@ -325,7 +350,7 @@ fn home_auth(db: &Db, req: &Request) -> Option<CalendarRow> {
 }
 
 fn home_events(state: &AppState, req: &Request, method: &str, uid: Option<&str>) -> Response {
-    let db = state.db.lock().expect("db");
+    let db = lock_db(state);
     if home_auth(&db, req).is_none() {
         return json_err(401, "unauthorized");
     }
@@ -504,7 +529,7 @@ fn exception(
     if method != "PUT" && method != "DELETE" {
         return json_err(404, "not found");
     }
-    let db = state.db.lock().expect("db");
+    let db = lock_db(state);
     let Some(cal) = authed_calendar(&db, req, calendar_id) else {
         return json_err(401, "unauthorized");
     };

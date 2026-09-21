@@ -107,10 +107,17 @@ fn write_string(out: &mut String, s: &str) {
     out.push('"');
 }
 
+/// Deepest object/array nesting `parse` accepts. Recursive descent would
+/// otherwise overflow the stack on `[[[[...`, and a stack overflow aborts the
+/// whole process rather than one worker thread.
+const MAX_DEPTH: usize = 32;
+
 pub fn parse(input: &str) -> Result<Value, String> {
     let mut p = Parser {
+        src: input,
         bytes: input.as_bytes(),
         i: 0,
+        depth: 0,
     };
     p.skip_ws();
     let v = p.value()?;
@@ -122,8 +129,10 @@ pub fn parse(input: &str) -> Result<Value, String> {
 }
 
 struct Parser<'a> {
+    src: &'a str,
     bytes: &'a [u8],
     i: usize,
+    depth: usize,
 }
 
 impl Parser<'_> {
@@ -146,8 +155,8 @@ impl Parser<'_> {
     fn value(&mut self) -> Result<Value, String> {
         self.skip_ws();
         match self.peek() {
-            Some(b'{') => self.object(),
-            Some(b'[') => self.array(),
+            Some(b'{') => self.nested(Self::object),
+            Some(b'[') => self.nested(Self::array),
             Some(b'"') => Ok(Value::String(self.string()?)),
             Some(b't') => self.ident(b"true", Value::Bool(true)),
             Some(b'f') => self.ident(b"false", Value::Bool(false)),
@@ -155,6 +164,16 @@ impl Parser<'_> {
             Some(b'-') | Some(b'0'..=b'9') => self.number(),
             _ => Err("invalid json".into()),
         }
+    }
+
+    fn nested(&mut self, f: fn(&mut Self) -> Result<Value, String>) -> Result<Value, String> {
+        if self.depth >= MAX_DEPTH {
+            return Err("json nested too deep".into());
+        }
+        self.depth += 1;
+        let v = f(self);
+        self.depth -= 1;
+        v
     }
 
     fn ident(&mut self, expected: &[u8], v: Value) -> Result<Value, String> {
@@ -221,6 +240,17 @@ impl Parser<'_> {
         }
         let mut out = String::new();
         loop {
+            // Copy the run up to the next delimiter in one slice. Every
+            // delimiter is ASCII, so both ends sit on char boundaries.
+            let start = self.i;
+            while self.i < self.bytes.len() {
+                let b = self.bytes[self.i];
+                if b == b'"' || b == b'\\' || b < 0x20 {
+                    break;
+                }
+                self.i += 1;
+            }
+            out.push_str(&self.src[start..self.i]);
             match self.bump() {
                 None => return Err("unterminated string".into()),
                 Some(b'"') => return Ok(out),
@@ -243,18 +273,7 @@ impl Parser<'_> {
                     }
                     _ => return Err("bad escape".into()),
                 },
-                Some(b) => {
-                    if b < 0x20 {
-                        return Err("raw control in string".into());
-                    }
-                    // restart from this byte as utf-8
-                    self.i -= 1;
-                    let rest =
-                        std::str::from_utf8(&self.bytes[self.i..]).map_err(|_| "bad utf-8")?;
-                    let ch = rest.chars().next().ok_or("bad utf-8")?;
-                    out.push(ch);
-                    self.i += ch.len_utf8();
-                }
+                Some(_) => return Err("raw control in string".into()),
             }
         }
     }
@@ -293,5 +312,32 @@ mod tests {
         assert_eq!(v.get("allDay").and_then(Value::as_bool), Some(false));
         let back = parse(&stringify(&v)).unwrap();
         assert_eq!(v, back);
+    }
+
+    #[test]
+    fn caps_nesting_depth() {
+        let ok = format!("{}{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+        assert!(parse(&ok).is_ok());
+        let deep = format!("{}{}", "[".repeat(MAX_DEPTH + 1), "]".repeat(MAX_DEPTH + 1));
+        assert!(parse(&deep).is_err());
+        assert!(parse(&"[".repeat(200_000)).is_err());
+        assert!(parse(&"{\"a\":".repeat(200_000)).is_err());
+    }
+
+    #[test]
+    fn parses_long_unicode_strings_fast() {
+        let body = format!("{{\"name\":\"{}\"}}", "é".repeat(500_000));
+        let t = std::time::Instant::now();
+        let v = parse(&body).unwrap();
+        assert!(t.elapsed().as_millis() < 500);
+        assert_eq!(v.get("name").and_then(Value::as_str).unwrap().chars().count(), 500_000);
+    }
+
+    #[test]
+    fn keeps_escapes_and_mixed_text() {
+        let v = parse(r#"{"a":"x\ny\u00e9 é \"q\" \\"}"#).unwrap();
+        assert_eq!(v.get("a").and_then(Value::as_str), Some("x\ny\u{e9} é \"q\" \\"));
+        assert!(parse("\"a\u{1}b\"").is_err());
+        assert!(parse("\"unterminated").is_err());
     }
 }

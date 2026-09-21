@@ -52,6 +52,11 @@ fn parse_ymd(value: &str) -> Option<(i32, u32, u32)> {
 
 /// RFC3339 with optional millis and Z / ±HH:MM.
 fn parse_rfc3339_millis(value: &str) -> Option<i64> {
+    // Non-ASCII input can put a char boundary anywhere the fixed-offset
+    // slices below land, and slicing inside a char panics.
+    if !value.is_ascii() {
+        return None;
+    }
     let b = value.as_bytes();
     if b.len() < 20 {
         return None;
