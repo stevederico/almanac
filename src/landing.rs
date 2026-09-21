@@ -16,11 +16,20 @@ pub fn json_index(base: &str) -> Value {
         (
             "description",
             Value::String(
-                "Agent-first calendar. POST /calendars. Humans subscribe to the https feed URL."
+                "Agent-first calendar, todos and notes on one key. POST /calendars. Humans subscribe to the https feed URLs."
                     .into(),
             ),
         ),
         ("create", Value::String(format!("POST {origin}/calendars"))),
+        (
+            "resources",
+            Value::object(&[
+                ("events", Value::String(format!("{origin}/v1/c/{{id}}/events"))),
+                ("todos", Value::String(format!("{origin}/v1/c/{{id}}/todos"))),
+                ("notes", Value::String(format!("{origin}/v1/c/{{id}}/notes"))),
+                ("export", Value::String(format!("{origin}/v1/c/{{id}}/export"))),
+            ]),
+        ),
         ("docs", Value::String(format!("{origin}/llms.txt"))),
     ])
 }
@@ -92,7 +101,7 @@ pub fn llms_txt(base: &str) -> String {
 }
 
 const DESCRIPTION: &str =
-    "An agent calendar. Agents write events. You subscribe in the app you already have.";
+    "An agent calendar, with todos and notes. Agents write them. You subscribe in the app you already have.";
 
 fn page(title: &str, body: &str, origin: &str) -> String {
     let image = if origin.is_empty() {
@@ -157,7 +166,7 @@ fn page(title: &str, body: &str, origin: &str) -> String {
 pub fn html_home(base: &str) -> String {
     let origin = base.trim_end_matches('/');
     let prompt = [
-        "Almanac is a hosted ICS calendar. You create one over HTTP. I subscribe to the feed in my own calendar app. You write events later when I ask.",
+        "Almanac is a hosted calendar with todos and notes. You create one over HTTP. One key writes all three, and each has its own feed. I subscribe to the feeds in my own apps. You write events, todos and notes later when I ask.",
         "",
         &format!("1. GET {origin}/llms.txt and follow it."),
         "2. Create a calendar:",
@@ -166,18 +175,22 @@ pub fn html_home(base: &str) -> String {
         "   Body may be {} or { \"name\": \"optional title\" }",
         "3. The JSON response has:",
         "   - id",
-        "   - subscribe  (https://…/feed/<token>.ics)",
+        "   - subscribe  (events feed, https://…/feed/<token>.ics)",
         "   - write",
         "   - key",
-        "4. Store id and key. The key is shown once and cannot be recovered. You need both to add or change events.",
-        "5. Give me those four values in plain text.",
+        "   - todos.subscribe and todos.write  (todos feed, .ics with VTODOs)",
+        "   - notes.subscribe and notes.write  (notes feed, Atom)",
+        "4. Store id and key. The key is shown once and cannot be recovered. You need both to add or change anything.",
+        "5. Give me the id, key and the three subscribe URLs in plain text.",
         "6. Help me subscribe. The feed is HTTPS ICS. Do not use webcal://.",
         "   Walk me through my calendar of choice:",
         "   - Apple Calendar: File → New Calendar Subscription → paste subscribe",
         "   - Google Calendar: Settings → Add calendar → From URL → paste subscribe",
         "   - Outlook: Add calendar → Subscribe from web → paste subscribe",
         "   - Anything else that accepts an https .ics URL: paste subscribe there",
-        "7. Do not add events unless I ask. Setup is create + subscribe only.",
+        "7. Offer the other two feeds. The todos feed is an .ics of tasks: apps that show tasks from a subscribed calendar, like Thunderbird, display it. The notes feed is Atom: any feed reader takes it. Only set up what I want.",
+        "8. Do not add events unless I ask. Same for todos and notes. Setup is create + subscribe only.",
+        &format!("9. I can read everything back out at any time: GET {origin}/v1/c/{{id}}/export with the key."),
         "",
         &format!("Base: {origin}"),
     ]

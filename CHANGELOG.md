@@ -1,3 +1,10 @@
+0.12.0
+
+  Update landing page
+  Update JSON index
+  Add resources list
+  Add export step
+
 0.11.0
 
   Add export

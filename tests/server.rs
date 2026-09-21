@@ -36,6 +36,12 @@ fn returns_json_for_agents() {
     assert_eq!(status, 200);
     let v = parse(std::str::from_utf8(&body).unwrap()).unwrap();
     assert!(v.get("create").is_some());
+    let resources = v.get("resources").expect("the index lists every resource");
+    for kind in ["events", "todos", "notes", "export"] {
+        let url = resources.get(kind).and_then(Value::as_str).unwrap();
+        assert!(url.contains("/v1/c/{id}/") && url.ends_with(kind), "{kind}: {url}");
+    }
+    assert!(v.get("description").and_then(Value::as_str).unwrap().contains("todos"));
 }
 
 #[test]
@@ -53,6 +59,12 @@ fn returns_html_for_browsers() {
     assert!(html.contains("/calendars"));
     assert!(html.contains("Subscribe from web"));
     assert!(html.contains("Do not add events unless I ask"));
+    // The page has to say it is more than a calendar.
+    assert!(html.contains("todos") && html.contains("notes"));
+    assert!(html.contains("todos.subscribe") && html.contains("notes.subscribe"));
+    assert!(html.contains("/export"));
+    assert!(!html.contains("{origin}"), "an unformatted placeholder leaked into the page");
+    assert!(html.contains("example.test/v1/c/{id}/export"));
     assert!(html.contains("og.png"));
     assert!(html.contains("og:image"));
     assert!(html.contains("twitter:card"));
