@@ -169,6 +169,18 @@ impl Connection {
         Ok(rows)
     }
 
+    /// Start a write transaction. `BEGIN IMMEDIATE` takes the write lock up
+    /// front, so a read-then-write sequence cannot be interleaved by another
+    /// writer. Dropping the guard without `commit` rolls back, including when
+    /// the caller returns early with `?` or panics.
+    pub fn begin(&self) -> Result<Transaction<'_>, String> {
+        self.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(Transaction {
+            conn: self,
+            open: true,
+        })
+    }
+
     fn prepare(&self, sql: &str, binds: &[Bind<'_>]) -> Result<*mut sqlite3_stmt, String> {
         let c_sql = CString::new(sql).map_err(|_| "sql")?;
         let mut stmt = ptr::null_mut();
@@ -197,6 +209,31 @@ impl Connection {
             }
         }
         Ok(stmt)
+    }
+}
+
+pub struct Transaction<'a> {
+    conn: &'a Connection,
+    open: bool,
+}
+
+impl Transaction<'_> {
+    pub fn commit(mut self) -> Result<(), String> {
+        let done = self.conn.execute_batch("COMMIT");
+        // A failed COMMIT (disk full, busy) leaves the transaction open;
+        // Drop rolls it back.
+        if done.is_ok() {
+            self.open = false;
+        }
+        done
+    }
+}
+
+impl Drop for Transaction<'_> {
+    fn drop(&mut self) {
+        if self.open {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
     }
 }
 

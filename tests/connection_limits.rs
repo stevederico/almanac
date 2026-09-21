@@ -30,12 +30,16 @@ fn free_port() -> u16 {
 }
 
 fn start_server(db: &str) -> (ServerGuard, u16) {
+    start_server_with(db, &[("AGENT_KEY", "test-agent-key")])
+}
+
+fn start_server_with(db: &str, env: &[(&str, &str)]) -> (ServerGuard, u16) {
     let port = free_port();
     let child = Command::new(env!("CARGO_BIN_EXE_almanac"))
         .env("PORT", port.to_string())
         .env("HOST", "127.0.0.1")
         .env("DB_PATH", db)
-        .env("AGENT_KEY", "test-agent-key")
+        .envs(env.iter().copied())
         .current_dir(std::env::temp_dir())
         .spawn()
         .expect("spawn almanac");
@@ -211,4 +215,27 @@ fn honors_expect_100_continue() {
     stream.read_to_end(&mut rest).expect("read response");
     let text = String::from_utf8_lossy(&rest);
     assert!(text.starts_with("HTTP/1.1 201"), "{text:?}");
+}
+
+#[test]
+fn a_rotated_agent_key_applies_on_the_next_start() {
+    let db = std::env::temp_dir().join(format!("almanac-rotate-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&db);
+    let db = db.to_str().unwrap().to_string();
+    let get = |port: u16, key: &str| {
+        exchange(
+            port,
+            format!("GET /v1/events HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {key}\r\n\r\n")
+                .as_bytes(),
+        )
+    };
+
+    let (first, port) = start_server_with(&db, &[("FEED_TOKEN", "feed-1"), ("AGENT_KEY", "key-1")]);
+    assert!(get(port, "key-1").starts_with("HTTP/1.1 200"));
+    drop(first);
+
+    let (_second, port) = start_server_with(&db, &[("FEED_TOKEN", "feed-1"), ("AGENT_KEY", "key-2")]);
+    assert!(get(port, "key-1").starts_with("HTTP/1.1 401"), "old key still works");
+    assert!(get(port, "key-2").starts_with("HTTP/1.1 200"), "new key rejected");
+    let _ = std::fs::remove_file(&db);
 }

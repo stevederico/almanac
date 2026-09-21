@@ -103,6 +103,8 @@ impl Db {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let conn = Connection::open(path)?;
+        // Wait for another connection's write lock instead of failing at once.
+        conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS calendars (
                 id TEXT PRIMARY KEY,
@@ -190,19 +192,52 @@ impl Db {
             .ok_or_else(|| "failed to create calendar".into())
     }
 
+    /// Make the `home` calendar match the environment.
+    ///
+    /// The env is the source of truth: a changed `AGENT_KEY`, `FEED_TOKEN` or
+    /// `CAL_NAME` is written through. Before, an existing `home` was returned
+    /// untouched, so rotating a leaked key in the env silently did nothing.
+    ///
+    /// Returns the row and which fields changed (`"created"`, `"agent_key"`,
+    /// `"feed_token"`, `"name"`). Never the values: they are secrets.
     pub fn ensure_home_calendar(
         &self,
         feed_token: &str,
         agent_key: &str,
         name: &str,
-    ) -> Result<CalendarRow, String> {
+    ) -> Result<(CalendarRow, Vec<&'static str>), String> {
         if let Some(existing) = self.get_calendar("home")? {
-            return Ok(existing);
+            let mut changed = Vec::new();
+            if existing.agent_key != agent_key {
+                changed.push("agent_key");
+            }
+            if existing.feed_token != feed_token {
+                changed.push("feed_token");
+            }
+            if existing.name != name {
+                changed.push("name");
+            }
+            if changed.is_empty() {
+                return Ok((existing, changed));
+            }
+            self.conn.execute(
+                "UPDATE calendars SET feed_token = ?1, agent_key = ?2, name = ?3 WHERE id = 'home'",
+                &[
+                    Bind::Text(feed_token),
+                    Bind::Text(agent_key),
+                    Bind::Text(name),
+                ],
+            )?;
+            let row = self
+                .get_calendar("home")?
+                .ok_or_else(|| "home calendar vanished".to_string())?;
+            return Ok((row, changed));
         }
         if let Some(by_token) = self.get_calendar_by_feed_token(feed_token)? {
-            return Ok(by_token);
+            return Ok((by_token, Vec::new()));
         }
-        self.create_calendar(Some(name), Some("home"), Some(feed_token), Some(agent_key))
+        let row = self.create_calendar(Some(name), Some("home"), Some(feed_token), Some(agent_key))?;
+        Ok((row, vec!["created"]))
     }
 
     pub fn list_events(&self, calendar_id: &str) -> Result<Vec<EventRow>, String> {
@@ -239,6 +274,7 @@ impl Db {
     }
 
     pub fn upsert_event(&self, calendar_id: &str, input: &EventInput) -> Result<EventRow, String> {
+        let tx = self.conn.begin()?;
         let all_day = input.all_day == Some(true) || is_ymd(&input.start);
         let now = now_iso();
         let generated = event_uid();
@@ -331,8 +367,11 @@ impl Db {
                 ],
             )?;
         }
-        self.get_event(calendar_id, uid)?
-            .ok_or_else(|| "failed to save event".into())
+        let saved = self
+            .get_event(calendar_id, uid)?
+            .ok_or_else(|| "failed to save event".to_string())?;
+        tx.commit()?;
+        Ok(saved)
     }
 
     pub fn patch_event(
@@ -341,6 +380,7 @@ impl Db {
         uid: &str,
         patch: &EventPatch,
     ) -> Result<EventRow, String> {
+        let tx = self.conn.begin()?;
         let existing = self
             .get_event(calendar_id, uid)?
             .ok_or_else(|| "not found".to_string())?;
@@ -397,11 +437,15 @@ impl Db {
                 Bind::Text(uid),
             ],
         )?;
-        self.get_event(calendar_id, uid)?
-            .ok_or_else(|| "failed to save event".into())
+        let saved = self
+            .get_event(calendar_id, uid)?
+            .ok_or_else(|| "failed to save event".to_string())?;
+        tx.commit()?;
+        Ok(saved)
     }
 
     pub fn delete_event(&self, calendar_id: &str, uid: &str) -> Result<bool, String> {
+        let tx = self.conn.begin()?;
         if self.get_event(calendar_id, uid)?.is_none() {
             return Ok(false);
         }
@@ -413,6 +457,7 @@ impl Db {
             "DELETE FROM events WHERE calendar_id = ?1 AND uid = ?2",
             &[Bind::Text(calendar_id), Bind::Text(uid)],
         )?;
+        tx.commit()?;
         Ok(n > 0)
     }
 
@@ -422,6 +467,7 @@ impl Db {
         uid: &str,
         recurrence_id: &str,
     ) -> Result<(EventRow, bool), String> {
+        let tx = self.conn.begin()?;
         let event = self.require_series(calendar_id, uid)?;
         let recurrence_id = normalize_recurrence_id(recurrence_id, event.all_day)?;
         let prior = self.find_exception(calendar_id, uid, &recurrence_id)?;
@@ -454,6 +500,7 @@ impl Db {
         let saved = self
             .get_event(calendar_id, uid)?
             .ok_or_else(|| "failed to save event".to_string())?;
+        tx.commit()?;
         Ok((saved, created))
     }
 
@@ -463,6 +510,7 @@ impl Db {
         uid: &str,
         recurrence_id: &str,
     ) -> Result<bool, String> {
+        let tx = self.conn.begin()?;
         let event = self.require_series(calendar_id, uid)?;
         let recurrence_id = normalize_recurrence_id(recurrence_id, event.all_day)?;
         let n = self.conn.execute(
@@ -478,6 +526,7 @@ impl Db {
             return Ok(false);
         }
         self.bump_master(calendar_id, uid, &now_iso())?;
+        tx.commit()?;
         Ok(true)
     }
 
@@ -487,6 +536,7 @@ impl Db {
         uid: &str,
         input: &OverrideInput,
     ) -> Result<(EventRow, bool), String> {
+        let tx = self.conn.begin()?;
         let event = self.require_series(calendar_id, uid)?;
         let recurrence_id = normalize_recurrence_id(&input.recurrence_id, event.all_day)?;
         let times = resolve_for_event(&input.start, input.end.as_deref(), event.all_day, true)?;
@@ -562,6 +612,7 @@ impl Db {
         let saved = self
             .get_event(calendar_id, uid)?
             .ok_or_else(|| "failed to save event".to_string())?;
+        tx.commit()?;
         Ok((saved, created))
     }
 
@@ -571,6 +622,7 @@ impl Db {
         uid: &str,
         recurrence_id: &str,
     ) -> Result<bool, String> {
+        let tx = self.conn.begin()?;
         let event = self.require_series(calendar_id, uid)?;
         let recurrence_id = normalize_recurrence_id(recurrence_id, event.all_day)?;
         let n = self.conn.execute(
@@ -586,6 +638,7 @@ impl Db {
             return Ok(false);
         }
         self.bump_master(calendar_id, uid, &now_iso())?;
+        tx.commit()?;
         Ok(true)
     }
 
@@ -732,7 +785,17 @@ fn attach_exceptions(event: &mut EventRow, rows: &[ExceptionRow]) {
     }
 }
 
+/// All of it in one transaction. The rebuild below drops the old `events`
+/// table, and a failure between the drop and the rename used to leave the
+/// database with no events table (or a stray `events_new`) and every restart
+/// failing the same way.
 fn migrate_events(db: &Connection) -> Result<(), String> {
+    let tx = db.begin()?;
+    migrate_events_in(db)?;
+    tx.commit()
+}
+
+fn migrate_events_in(db: &Connection) -> Result<(), String> {
     let tables = table_names(db)?;
     if !tables.iter().any(|t| t == "events") {
         db.execute_batch(
@@ -1452,5 +1515,227 @@ mod tests {
             },
         );
         assert!(cleared.is_err());
+    }
+
+    // ---- transactions ------------------------------------------------------
+
+    fn series(db: &Db, cal: &str) {
+        db.upsert_event(
+            cal,
+            &EventInput {
+                uid: Some("standup".into()),
+                summary: "Standup".into(),
+                start: "2026-09-22T09:00:00-07:00".into(),
+                end: Some("2026-09-22T09:15:00-07:00".into()),
+                rrule: Some("FREQ=WEEKLY;BYDAY=TU".into()),
+                time_zone: Some("America/Los_Angeles".into()),
+                ..EventInput::default()
+            },
+        )
+        .unwrap();
+    }
+
+    fn override_at(day: &str, summary: &str) -> OverrideInput {
+        OverrideInput {
+            recurrence_id: format!("2026-{day}T09:00:00"),
+            summary: Some(summary.into()),
+            start: format!("2026-{day}T10:00:00"),
+            ..OverrideInput::default()
+        }
+    }
+
+    #[test]
+    fn a_dropped_transaction_rolls_back_and_frees_the_connection() {
+        let (db, cal_id) = tmp_db();
+        {
+            let _tx = db.conn.begin().unwrap();
+            db.conn
+                .execute("DELETE FROM calendars WHERE id = ?1", &[Bind::Text(&cal_id)])
+                .unwrap();
+            // Dropped here without commit, as an early `?` or a panic would.
+        }
+        assert!(db.get_calendar(&cal_id).unwrap().is_some());
+        // A leaked open transaction would make this fail forever.
+        db.conn.begin().unwrap().commit().unwrap();
+    }
+
+    #[test]
+    fn a_failed_override_write_keeps_the_one_it_replaced() {
+        let (db, cal_id) = tmp_db();
+        series(&db, &cal_id);
+        db.put_override(&cal_id, "standup", &override_at("10-13", "Original"))
+            .unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE INSERT ON event_exceptions
+                 BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+            )
+            .unwrap();
+        let err = db.put_override(&cal_id, "standup", &override_at("10-13", "Replacement"));
+        assert!(err.is_err());
+        let ev = db.get_event(&cal_id, "standup").unwrap().unwrap();
+        assert_eq!(ev.overrides.len(), 1, "the old override was deleted");
+        assert_eq!(ev.overrides[0].summary, "Original");
+        assert_eq!(ev.sequence, 1, "sequence moved on a write that failed");
+    }
+
+    #[test]
+    fn a_failed_exdate_write_keeps_the_override_it_replaced() {
+        let (db, cal_id) = tmp_db();
+        series(&db, &cal_id);
+        db.put_override(&cal_id, "standup", &override_at("10-13", "Keep me"))
+            .unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE INSERT ON event_exceptions
+                 BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+            )
+            .unwrap();
+        assert!(db
+            .put_exdate(&cal_id, "standup", "2026-10-13T09:00:00")
+            .is_err());
+        let ev = db.get_event(&cal_id, "standup").unwrap().unwrap();
+        assert_eq!(ev.overrides.len(), 1);
+        assert!(ev.exdates.is_empty());
+    }
+
+    #[test]
+    fn a_failed_delete_leaves_the_event_and_its_exceptions() {
+        let (db, cal_id) = tmp_db();
+        series(&db, &cal_id);
+        db.put_exdate(&cal_id, "standup", "2026-10-06T09:00:00").unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE DELETE ON events
+                 BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+            )
+            .unwrap();
+        assert!(db.delete_event(&cal_id, "standup").is_err());
+        let ev = db.get_event(&cal_id, "standup").unwrap().unwrap();
+        assert_eq!(ev.exdates, vec!["2026-10-06T09:00:00".to_string()]);
+    }
+
+    #[test]
+    fn a_failed_patch_changes_nothing() {
+        let (db, cal_id) = tmp_db();
+        db.upsert_event(
+            &cal_id,
+            &EventInput {
+                uid: Some("n".into()),
+                summary: "Note".into(),
+                start: "2026-08-16T12:00:00Z".into(),
+                ..EventInput::default()
+            },
+        )
+        .unwrap();
+        db.conn
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE UPDATE ON events
+                 BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+            )
+            .unwrap();
+        let patch = EventPatch {
+            summary: Some("Changed".into()),
+            ..EventPatch::default()
+        };
+        assert!(db.patch_event(&cal_id, "n", &patch).is_err());
+        let ev = db.get_event(&cal_id, "n").unwrap().unwrap();
+        assert_eq!((ev.summary.as_str(), ev.sequence), ("Note", 0));
+    }
+
+    // ---- migration ---------------------------------------------------------
+
+    fn scratch_path() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("almanac-mig-{}", hex_encode(&random_bytes(8))));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("calendar.db")
+    }
+
+    /// The layout before events had a `calendar_id`.
+    fn legacy_db(path: &std::path::Path, with_sequence: bool) {
+        let conn = Connection::open(path).unwrap();
+        let sequence = if with_sequence { "sequence INTEGER NOT NULL DEFAULT 0," } else { "" };
+        conn.execute_batch(&format!(
+            "CREATE TABLE events (
+                uid TEXT PRIMARY KEY, summary TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '',
+                dtstart TEXT NOT NULL, dtend TEXT NOT NULL,
+                all_day INTEGER NOT NULL DEFAULT 0, transparent INTEGER NOT NULL DEFAULT 1,
+                {sequence}
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );
+             INSERT INTO events (uid, summary, dtstart, dtend, created_at, updated_at)
+             VALUES ('old-1', 'Old', '2026-08-16T12:00:00.000Z', '2026-08-16T13:00:00.000Z',
+                     '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z');"
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn migrates_a_legacy_database_into_the_home_calendar() {
+        let path = scratch_path();
+        legacy_db(&path, true);
+        let db = Db::open(&path).unwrap();
+        let ev = db.get_event("home", "old-1").unwrap().unwrap();
+        assert_eq!(ev.summary, "Old");
+        assert!(ev.rrule.is_empty());
+        // Idempotent.
+        drop(db);
+        assert_eq!(Db::open(&path).unwrap().list_events("home").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_failed_migration_leaves_the_old_data_untouched() {
+        let path = scratch_path();
+        // No `sequence` column: the copy into events_new fails after
+        // events_new was created.
+        legacy_db(&path, false);
+        assert!(Db::open(&path).is_err());
+        assert!(Db::open(&path).is_err(), "still failing the same way, not worse");
+
+        let conn = Connection::open(&path).unwrap();
+        let tables = table_names(&conn).unwrap();
+        assert!(tables.contains(&"events".to_string()), "{tables:?}");
+        assert!(!tables.contains(&"events_new".to_string()), "{tables:?}");
+        let n = conn
+            .query_row("SELECT COUNT(*) FROM events", &[], |r| r.i64(0))
+            .unwrap();
+        assert_eq!(n, Some(1));
+        let cols = column_names(&conn, "events").unwrap();
+        assert!(!cols.contains(&"calendar_id".to_string()));
+    }
+
+    // ---- home calendar -----------------------------------------------------
+
+    #[test]
+    fn home_follows_the_environment() {
+        let (db, _) = tmp_db();
+        let (home, changed) = db.ensure_home_calendar("feed-1", "key-1", "Home").unwrap();
+        assert_eq!(changed, vec!["created"]);
+        assert_eq!((home.feed_token.as_str(), home.agent_key.as_str()), ("feed-1", "key-1"));
+
+        let (_, changed) = db.ensure_home_calendar("feed-1", "key-1", "Home").unwrap();
+        assert!(changed.is_empty());
+
+        let (home, changed) = db.ensure_home_calendar("feed-1", "key-2", "Home").unwrap();
+        assert_eq!(changed, vec!["agent_key"]);
+        assert_eq!(home.agent_key, "key-2");
+        assert_eq!(db.get_calendar("home").unwrap().unwrap().agent_key, "key-2");
+
+        let (home, changed) = db.ensure_home_calendar("feed-2", "key-2", "Renamed").unwrap();
+        assert_eq!(changed, vec!["feed_token", "name"]);
+        assert_eq!((home.feed_token.as_str(), home.name.as_str()), ("feed-2", "Renamed"));
+        assert!(db.get_calendar_by_feed_token("feed-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn home_refuses_a_feed_token_another_calendar_owns() {
+        let (db, cal_id) = tmp_db();
+        let other = db.get_calendar(&cal_id).unwrap().unwrap();
+        db.ensure_home_calendar("feed-1", "key-1", "Home").unwrap();
+        assert!(db
+            .ensure_home_calendar(&other.feed_token, "key-1", "Home")
+            .is_err());
+        assert_eq!(db.get_calendar("home").unwrap().unwrap().feed_token, "feed-1");
     }
 }

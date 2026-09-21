@@ -765,3 +765,19 @@ fn feed_keeps_each_series_own_exceptions() {
         assert!(!vevent.contains(other), "{uid} picked up another series' exception");
     }
 }
+
+#[test]
+fn rotating_the_home_key_takes_effect() {
+    let app = test_app();
+    assert_eq!(call(&app, "GET", "/v1/events", KEY, ""), 200);
+    app.db
+        .lock()
+        .unwrap()
+        .ensure_home_calendar(FEED, "rotated", "My Calendar")
+        .unwrap();
+    assert_eq!(call(&app, "GET", "/v1/events", KEY, ""), 401);
+    assert_eq!(call(&app, "GET", "/v1/events", "rotated", ""), 200);
+    // The feed token did not change, so subscribers are undisturbed.
+    let (status, _, _) = send(&app, Request::new("GET", &format!("/feed/{FEED}.ics")));
+    assert_eq!(status, 200);
+}

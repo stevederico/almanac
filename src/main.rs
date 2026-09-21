@@ -27,9 +27,23 @@ fn main() {
         std::process::exit(1);
     });
     if !cfg.feed_token.is_empty() && !cfg.agent_key.is_empty() {
-        if let Err(e) = db.ensure_home_calendar(&cfg.feed_token, &cfg.agent_key, &cfg.cal_name) {
-            eprintln!("home calendar: {e}");
-            std::process::exit(1);
+        match db.ensure_home_calendar(&cfg.feed_token, &cfg.agent_key, &cfg.cal_name) {
+            Ok((_, changed)) if !changed.is_empty() => println!(
+                "{}",
+                stringify(&Value::object(&[
+                    ("t", Value::String(now_iso())),
+                    ("msg", Value::String("home".into())),
+                    (
+                        "changed",
+                        Value::Array(changed.into_iter().map(|c| Value::String(c.into())).collect()),
+                    ),
+                ]))
+            ),
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("home calendar: {e}");
+                std::process::exit(1);
+            }
         }
     }
     let public_base = std::env::var("PUBLIC_BASE").unwrap_or_default();

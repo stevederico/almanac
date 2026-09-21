@@ -1,3 +1,11 @@
+0.4.0
+
+  Add transactions
+  Roll back failures
+  Migrate atomically
+  Wait on locks
+  Rotate home keys
+
 0.3.0
 
   Add read deadline
