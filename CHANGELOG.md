@@ -1,3 +1,10 @@
+0.20.0
+
+  Document hosted service
+  Describe local loopback
+  Drop Mac-only claims
+  Correct backup comment
+
 0.19.0
 
   Fix skill test

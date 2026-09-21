@@ -1,17 +1,20 @@
 # Run
 
-Prod: `https://almanac.dottie.ai` (Railway + dottie-proxy). Local loopback still works.
+Prod is `https://almanac.dottie.ai`: the `almanac` service on Railway, volume `/app/data`, behind dottie-proxy. It lives in the bixby project. A separate Railway project also named `almanac` is empty. Do not deploy there.
 
-1. `cp .env.example .env` and set `FEED_TOKEN` + `AGENT_KEY`.
-2. Rust toolchain (`cargo`) on PATH. System `libsqlite3` (macOS has it).
-3. `./bin/almanac start` — builds the binary, copies the LaunchAgent, bootstraps it.
-4. `./bin/almanac url` — subscribe that URL in Calendar.app.
-5. Optional: `cp ~/Desktop/projects/almanac/bin/almanac ~/.local/bin/almanac`
+`railway up` from this repo ships the current tree. Redeploying the existing build does not.
 
-Runtime copy lives in `~/.local/share/almanac` (launchd cannot read Desktop).
-Logs: `~/Library/Logs/almanac.out` and `almanac.err`.
+Prod answers `403` to an empty or default-curl User-Agent. Check with `-A "Mozilla/5.0 me"`: `/health`, then the boot lines in the Railway logs. A `home` sync log line means `AGENT_KEY`, `FEED_TOKEN`, or `CAL_NAME` drifted from the database.
 
-iPhone needs a reachable hostname (Tailscale). Do not bind `0.0.0.0` unless you mean to.
+## Local
+
+Optional loopback. The server binds `localhost` (`127.0.0.1` and `::1`). Other devices cannot reach it. Do not bind `0.0.0.0` unless you mean to.
+
+1. `cp .env.example .env` and set `FEED_TOKEN` + `AGENT_KEY` (`openssl rand -hex 24`).
+2. Rust toolchain (`cargo`) on PATH, and system `libsqlite3`.
+3. `cargo run --release`. Health: `http://localhost:18788/health`.
+
+On macOS, `./bin/almanac start` builds the binary, copies it to `~/.local/share/almanac` (launchd cannot read Desktop), and bootstraps the LaunchAgent `com.stevederico.almanac`. `./bin/almanac url` prints the subscribe URL. Logs: `~/Library/Logs/almanac.out` and `almanac.err`. The script defaults `ALMANAC_ROOT` to `~/Desktop/projects/almanac`; set it when the checkout is somewhere else. It always binds `localhost`.
 
 ## Backups (Railway or any host)
 

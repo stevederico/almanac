@@ -1,67 +1,60 @@
 # almanac
 
-agent-first calendar. request one, subscribe the url, agents write events.
+Agent-first calendar, notes, and todos. Request a calendar, subscribe the URL, agents write.
 
-Prod: `https://almanac.dottie.ai`. Local: `http://localhost:18788`. Do not use `webcal://`.
+Prod: `https://almanac.dottie.ai`. Do not use `webcal://`.
 
-## Quick Start
+## Use
+
+`POST /calendars` returns `id`, `subscribe`, `write`, and `key`. The key is shown once; only its hash is stored. The same key writes events, todos, and notes on that calendar. There is no delete, so a create is permanent.
+
+Subscribe: Calendar → File → New Calendar Subscription → paste the `subscribe` URL. Use `https://`.
+
+| Resource | Write | Feed |
+|---|---|---|
+| Events | `PUT /v1/c/:id/events/:uid` | ICS |
+| Todos | `PUT /v1/c/:id/todos/:uid` | VTODO |
+| Notes | `PUT /v1/c/:id/notes/:uid` | Atom, `?q=` search |
+| Export | `GET /v1/c/:id/export` | JSON or Markdown, no secrets |
+
+Contract: [AGENTS.md](AGENTS.md). Machine-readable: `GET /llms.txt`. Agent skill: [skills/almanac](skills/almanac/SKILL.md). It reads the default calendar from `~/.config/almanac/hosted-calendars.json`.
+
+## Prod
+
+The `almanac` service on Railway, volume `/app/data`, behind dottie-proxy. It lives in the bixby project. A separate Railway project also named `almanac` is empty. Do not deploy there. Steps: [docs/DEPLOY.md](docs/DEPLOY.md).
+
+## Local
+
+Optional. The process binds loopback (`localhost`, `127.0.0.1`, and `::1`). Nothing else on the network can connect, including a phone. Use prod for that.
 
 ```bash
 cp .env.example .env
 # set FEED_TOKEN and AGENT_KEY (openssl rand -hex 24)
-./bin/almanac start
-./bin/almanac url
+cargo run --release
 ```
 
-Calendar → File → New Calendar Subscription → paste that URL.
+`.env` must be a regular file, not a symlink. Default port `18788`. Health: `http://localhost:18788/health`.
 
-## Features
+`FEED_TOKEN` and `AGENT_KEY` seed the local `home` calendar only. Hosted calendars from `POST /calendars` each get their own key.
 
-### Local feed
-- **Loopback only** — nothing listens on the LAN
-- **LaunchAgent** keeps it up after login (`com.stevederico.almanac`)
-- **Runtime copy** in `~/.local/share/almanac` (launchd cannot read Desktop)
-- **Stable UIDs** so edits replace, not duplicate
-
-### Agent API
-- **POST /calendars** returns `id`, `subscribe`, `write`, and `key` (shown once; only its hash is stored)
-- **PUT /v1/c/:id/events/:uid** is the write path
-- **PUT /v1/c/:id/todos/:uid** writes todos with the same key. Own `VTODO` feed
-- **PUT /v1/c/:id/notes/:uid** writes notes with the same key. Own Atom feed, `?q=` search
-- **GET /v1/c/:id/export** returns everything as JSON or Markdown
-- Contract: [AGENTS.md](AGENTS.md) · machine: `/llms.txt` · agent skill: [skills/almanac](skills/almanac/SKILL.md)
-
-This Mac only. iPhone cannot see `127.0.0.1`. Tailscale later if you want the phone.
-
-## Configuration
-
-`.env` must be a regular file, not a symlink.
+On macOS, `./bin/almanac start` builds a release binary, copies it to `~/.local/share/almanac` (launchd cannot read Desktop), and installs the LaunchAgent `com.stevederico.almanac`. `./bin/almanac url` prints the subscribe URL. The script's default repo path is `~/Desktop/projects/almanac`; set `ALMANAC_ROOT` if the checkout lives elsewhere. It always binds `localhost`.
 
 | Variable | Purpose |
 |---|---|
 | `HOST` | Bind address (default `localhost`) |
 | `PORT` | Default `18788` |
-| `FEED_TOKEN` | Secret in the subscribe URL |
-| `AGENT_KEY` | Bearer token for writes |
+| `FEED_TOKEN` | Secret in the home calendar's subscribe URL |
+| `AGENT_KEY` | Bearer token for the home calendar |
 | `CAL_NAME` | Title in Calendar (default `Almanac`) |
 | `DB_PATH` | SQLite file |
+| `PUBLIC_BASE` | Origin used in feed URLs when set |
 
-## Tech Stack
+Other caps and backup settings are in `.env.example`.
 
-| Technology | Version | Purpose |
-|---|---|---|
-| **Rust** | 2021 | Runtime. Zero crates. |
-| **SQLite** | system | Event store (`libsqlite3`) |
-| **launchd** | macOS | KeepAlive on login |
+## Stack
 
-## Architecture
+Rust 2021, no crates. System SQLite (`libsqlite3`).
 
 ```
-agent  --PUT /v1/events/:uid-->  SQLite on disk  --GET /feed/:token.ics-->  Calendar.app
-```
-
-## Control
-
-```bash
-almanac start|stop|restart|status|ensure|url
+agent  --PUT /v1/c/:id/events/:uid-->  SQLite  --GET /feed/:token.ics-->  Calendar
 ```
