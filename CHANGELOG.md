@@ -1,3 +1,11 @@
+0.15.0
+
+  Move skill into repo
+  Make skill generic
+  Block key commits
+  Scan tracked files
+  Ignore credentials
+
 0.14.0
 
   Version share image

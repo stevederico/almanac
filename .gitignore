@@ -10,3 +10,12 @@ bun.lock
 
 .idea/
 railway.json
+
+# Credentials and data never belong in the repo.
+.env.*
+!.env.example
+hosted-calendars.json
+*.db-journal
+*.db-wal
+*.db.pre-*
+backups/

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Blocks a commit that adds a credential. Enable once: git config core.hooksPath scripts/hooks
+cd "$(git rev-parse --show-toplevel)" || exit 1
+git diff --cached -U0 --no-color | grep -E '^\+' | grep -v '^+++' | scripts/hooks/scan-secrets "the staged changes"

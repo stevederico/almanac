@@ -170,6 +170,10 @@ Subscribe: paste `subscribe` in Calendar → File → New Calendar Subscription.
 
 Machine docs: `GET /llms.txt`. Humans: `GET /`.
 
+Agent skill: `skills/almanac/SKILL.md`. It ships with the API so the two change together. Install by linking it: `ln -sfn "$PWD/skills/almanac" ~/.agents/skills/almanac`. It reads the default calendar and key from `~/.config/almanac/hosted-calendars.json`, so it holds no secret and no calendar id. `tests/skill.rs` enforces that.
+
+Secrets stay out of the repo. Enable the commit hook once per clone: `git config core.hooksPath scripts/hooks`. It blocks a commit or a commit message that holds a 48-character hex string (the size of a key or feed token) or any credential from `~/.config/almanac/hosted-calendars.json`, and never prints what it found. `tests/secrets.rs` runs the same checks over every tracked file and confirms `.env`, `*.db`, backups and the credentials file are git-ignored.
+
 ## Errors
 
 `401` `{"error":"unauthorized"}` — missing or wrong key.
