@@ -157,6 +157,15 @@ The list omits bodies. Add `?body=true` for them. `?q=` matches title or body, A
 
 Notes feed: `notes.subscribe`. Atom, newest 200 notes, no bearer, its own token.
 
+## Export
+
+```bash
+curl -sS "$BASE/v1/c/$ID/export" -H "Authorization: Bearer $KEY" > almanac.json
+curl -sS "$BASE/v1/c/$ID/export?format=md" -H "Authorization: Bearer $KEY" > almanac.md
+```
+
+Everything in the calendar: events, todos, notes with bodies. No feed tokens or keys. `format` is `json` (default) or `md`. 10 exports per hour per calendar (`429`).
+
 Subscribe: paste `subscribe` in Calendar → File → New Calendar Subscription. Use `https://`, not `webcal://`.
 
 Machine docs: `GET /llms.txt`. Humans: `GET /`.

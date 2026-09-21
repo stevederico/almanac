@@ -1,3 +1,11 @@
+0.11.0
+
+  Add export
+  Add Markdown export
+  Meter exports
+  Add key scrub
+  Document backups
+
 0.10.0
 
   Add notes

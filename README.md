@@ -28,6 +28,7 @@ Calendar → File → New Calendar Subscription → paste that URL.
 - **PUT /v1/c/:id/events/:uid** is the write path
 - **PUT /v1/c/:id/todos/:uid** writes todos with the same key. Own `VTODO` feed
 - **PUT /v1/c/:id/notes/:uid** writes notes with the same key. Own Atom feed, `?q=` search
+- **GET /v1/c/:id/export** returns everything as JSON or Markdown
 - Contract: [AGENTS.md](AGENTS.md) · machine: `/llms.txt`
 
 This Mac only. iPhone cannot see `127.0.0.1`. Tailscale later if you want the phone.

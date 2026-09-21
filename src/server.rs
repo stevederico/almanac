@@ -6,6 +6,7 @@ use crate::db::{
     parse_event_patch, parse_override_input, parse_recurrence_id, CalendarRow, Db, EventRow,
 };
 use crate::atom::{render_atom, AtomEntry};
+use crate::export::{export_json, export_markdown};
 use crate::http::{html_response, json_response, text_response, Request, Response};
 use crate::ics::{render_calendar, render_todos, IcsEvent, IcsOverride, IcsTodo};
 use crate::json::{parse as parse_json, stringify, Value};
@@ -93,6 +94,7 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
         (m, p) if let Some(uid) = p.strip_prefix("/v1/todos/") => {
             item_route(state, req, "home", m, uid, Resource::Todos)
         }
+        (m, "/v1/export") => export(state, req, "home", m),
         (m, "/v1/notes") => notes::route(state, req, "home", m, None),
         (m, p) if let Some(uid) = p.strip_prefix("/v1/notes/") => {
             item_route(state, req, "home", m, uid, Resource::Notes)
@@ -418,6 +420,9 @@ fn scoped(state: &AppState, req: &Request, method: &str, rest: &str) -> Response
     if let Some(uid) = rest.strip_prefix("todos/") {
         return item_route(state, req, id, method, uid, Resource::Todos);
     }
+    if rest == "export" {
+        return export(state, req, id, method);
+    }
     if rest == "notes" {
         return notes::route(state, req, id, method, None);
     }
@@ -425,6 +430,64 @@ fn scoped(state: &AppState, req: &Request, method: &str, rest: &str) -> Response
         return item_route(state, req, id, method, uid, Resource::Notes);
     }
     json_err(404, "not found")
+}
+
+/// `GET /v1/c/{id}/export?format=json|md`: everything in the calendar, in one
+/// document. `/v1/export` is `home`.
+fn export(state: &AppState, req: &Request, cal_id: &str, method: &str) -> Response {
+    if method != "GET" {
+        return json_err(404, "not found");
+    }
+    let markdown = match query_param(req, "format").as_deref() {
+        None | Some("json") => false,
+        Some("md" | "markdown") => true,
+        Some(_) => return json_err(400, "format must be json or md"),
+    };
+    let cal = match gate(state, req, cal_id, method) {
+        Ok(cal) => cal,
+        Err(res) => return res,
+    };
+    // Reading everything takes the database lock for a while, so exports are
+    // metered. The owner's own calendar is exempt, like its other limits.
+    if !is_home(&cal) {
+        if let Err(retry) = state.limiter.check(
+            &format!("x:{}", cal.id),
+            state.limits.exports_per_hour,
+            HOUR_MS,
+        ) {
+            return too_many(retry);
+        }
+    }
+    let (events, todos, notes) = {
+        let db = lock_db(state);
+        let events = db.list_events(&cal.id);
+        let todos = db.list_todos(&cal.id, None);
+        let notes = db.list_notes(&cal.id, None, 0);
+        match (events, todos, notes) {
+            (Ok(e), Ok(t), Ok(n)) => (e, t, n),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return json_err(500, &e),
+        }
+    };
+    let exported_at = now_iso();
+    let (ctype, ext, body) = if markdown {
+        (
+            "text/markdown; charset=utf-8",
+            "md",
+            export_markdown(&cal, &exported_at, &events, &todos, &notes),
+        )
+    } else {
+        (
+            "application/json; charset=utf-8",
+            "json",
+            stringify(&export_json(&cal, &exported_at, &events, &todos, &notes)),
+        )
+    };
+    text_response(200, ctype, body)
+        .header("cache-control", "no-store")
+        .header(
+            "content-disposition",
+            &format!("attachment; filename=\"almanac-{}.{ext}\"", cal.id),
+        )
 }
 
 #[derive(Clone, Copy)]

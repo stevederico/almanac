@@ -25,6 +25,9 @@ pub struct Limits {
     pub max_notes: i64,
     /// Exdates plus overrides per series.
     pub max_exceptions: usize,
+    /// Exports per calendar per hour. Each one reads the whole calendar under
+    /// the database lock.
+    pub exports_per_hour: u32,
     /// Writes per calendar per minute. The `home` calendar is exempt.
     pub writes_per_minute: u32,
     /// Proxies in front of the service that each append to `X-Forwarded-For`.
@@ -54,6 +57,9 @@ impl Limits {
         if let Some(v) = num(get("MAX_NOTES_PER_CALENDAR")) {
             self.max_notes = v;
         }
+        if let Some(v) = num(get("MAX_EXPORTS_PER_HOUR")) {
+            self.exports_per_hour = v;
+        }
         if let Some(v) = num(get("MAX_WRITES_PER_MINUTE")) {
             self.writes_per_minute = v;
         }
@@ -74,6 +80,7 @@ impl Default for Limits {
             max_todos: 5_000,
             max_notes: 500,
             max_exceptions: 500,
+            exports_per_hour: 10,
             writes_per_minute: 120,
             proxy_hops: 1,
         }

@@ -83,6 +83,10 @@ pub fn llms_txt(base: &str) -> String {
         "PUT keeps any field you leave out. Send null to clear body or tags. Wrong types are a 400. Caps: 500 notes per calendar (409).",
         "Notes feed: GET the notes.subscribe URL. Atom, newest 200. No bearer. Its token differs from the other feeds.",
         "",
+        "Export (your data is never locked in):",
+        "GET /v1/c/{id}/export?format=json|md   Authorization: Bearer {key}",
+        "Everything in the calendar: events, todos, and notes with bodies. 10 per hour.",
+        "",
     ]
     .join("\n")
 }

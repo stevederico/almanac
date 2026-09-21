@@ -834,6 +834,36 @@ fn migrate_calendars(path: &Path, db: &Connection) -> Result<(), String> {
     tx.commit()
 }
 
+impl Db {
+    /// Blank the legacy plaintext `agent_key` column on every calendar.
+    ///
+    /// Auth has used `key_hash` alone since 0.8.0; the column was kept for one
+    /// release so a bad deploy could roll back. Once that release has proven
+    /// itself this removes the last copy of each key from the file. A snapshot
+    /// is taken first, and only if there is something to scrub. Returns how
+    /// many calendars were changed.
+    pub fn scrub_legacy_keys(&self, path: &Path) -> Result<usize, String> {
+        let pending = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM calendars WHERE agent_key != ''",
+                &[],
+                |row| row.i64(0),
+            )?
+            .unwrap_or(0);
+        if pending == 0 {
+            return Ok(0);
+        }
+        snapshot(path, "0.11.0")?;
+        let tx = self.conn.begin()?;
+        let changed = self
+            .conn
+            .execute("UPDATE calendars SET agent_key = '' WHERE agent_key != ''", &[])?;
+        tx.commit()?;
+        Ok(changed)
+    }
+}
+
 /// Copy the database file to `<path>.pre-<label>` before a migration that
 /// rewrites rows. Never overwrites an earlier snapshot.
 fn snapshot(path: &Path, label: &str) -> Result<(), String> {
@@ -1846,6 +1876,47 @@ mod tests {
         assert_ne!(stored.0, key);
         assert_ne!(stored.1, key);
         assert!(!stored.0.is_empty(), "an empty legacy value would match an empty header");
+    }
+
+    #[test]
+    fn scrubbing_removes_every_plaintext_key_and_leaves_auth_alone() {
+        let path = scratch_path();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE calendars (
+                    id TEXT PRIMARY KEY, feed_token TEXT NOT NULL UNIQUE,
+                    agent_key TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL
+                 );
+                 INSERT INTO calendars VALUES
+                    ('cal_a', 'fa', 'key-a', 'A', '2026-08-01T00:00:00.000Z'),
+                    ('cal_b', 'fb', 'key-b', 'B', '2026-08-01T00:00:00.000Z');",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let (fresh, _) = db.create_calendar(Some("C"), None, None, None).unwrap();
+        assert_eq!(db.scrub_legacy_keys(&path).unwrap(), 3, "two legacy plus the throwaway");
+
+        let plaintext = db
+            .conn
+            .query("SELECT agent_key FROM calendars WHERE agent_key != ''", &[], |r| r.text(0))
+            .unwrap();
+        assert!(plaintext.is_empty(), "{plaintext:?}");
+        assert_eq!(db.get_calendar("cal_a").unwrap().unwrap().key_hash, sha256_hex("key-a"));
+        assert_eq!(db.get_calendar(&fresh.id).unwrap().unwrap().key_hash, fresh.key_hash);
+
+        // The snapshot still holds what was there, in case it is needed.
+        let mut snap = path.as_os_str().to_owned();
+        snap.push(".pre-0.11.0");
+        let snap = Connection::open(std::path::Path::new(&snap)).unwrap();
+        let kept = snap
+            .query_row("SELECT agent_key FROM calendars WHERE id = 'cal_a'", &[], |r| r.text(0))
+            .unwrap();
+        assert_eq!(kept.as_deref(), Some("key-a"));
+
+        // Nothing left to do: no work, and no second snapshot to overwrite the first.
+        assert_eq!(db.scrub_legacy_keys(&path).unwrap(), 0);
     }
 
     // ---- home calendar -----------------------------------------------------

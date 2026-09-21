@@ -253,3 +253,52 @@ fn a_rotated_agent_key_applies_on_the_next_start() {
     assert!(get(port, "key-2").starts_with("HTTP/1.1 200"), "new key rejected");
     let _ = std::fs::remove_file(&db);
 }
+
+#[test]
+fn scrub_legacy_keys_blanks_plaintext_on_boot_and_keeps_keys_working() {
+    let db = std::env::temp_dir().join(format!("almanac-scrub-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&db);
+    let snapshot = format!("{}.pre-0.11.0", db.display());
+    let _ = std::fs::remove_file(&snapshot);
+    let db = db.to_str().unwrap().to_string();
+
+    let (first, port) = start_server_with(&db, &[("AGENT_KEY", "home-key"), ("FEED_TOKEN", "home-feed")]);
+    let created = exchange(
+        port,
+        b"POST /calendars HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+    );
+    let body = created.split("\r\n\r\n").nth(1).unwrap_or_default();
+    let field = |name: &str| -> String {
+        let after = body.split(&format!("\"{name}\":\"")).nth(1).unwrap_or_default();
+        after.split('"').next().unwrap_or_default().to_string()
+    };
+    let (id, key) = (field("id"), field("key"));
+    assert!(id.starts_with("cal_") && !key.is_empty(), "{created}");
+    drop(first);
+
+    let plaintext = |path: &str| {
+        let conn = almanac::sqlite::Connection::open(path).unwrap();
+        conn.query("SELECT agent_key FROM calendars WHERE agent_key != ''", &[], |r| r.text(0))
+            .unwrap()
+            .len()
+    };
+    assert!(plaintext(&db) > 0, "the first boot leaves a throwaway in the legacy column");
+
+    let (_second, port) = start_server_with(
+        &db,
+        &[("AGENT_KEY", "home-key"), ("FEED_TOKEN", "home-feed"), ("SCRUB_LEGACY_KEYS", "1")],
+    );
+    assert_eq!(plaintext(&db), 0, "nothing plaintext is left");
+    assert!(std::path::Path::new(&snapshot).exists(), "the scrub keeps a copy first");
+
+    let get = |k: &str| {
+        exchange(
+            port,
+            format!("GET /v1/c/{id}/events HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {k}\r\n\r\n").as_bytes(),
+        )
+    };
+    assert!(get(&key).starts_with("HTTP/1.1 200"), "a scrubbed calendar must still accept its key");
+    assert!(get("nope").starts_with("HTTP/1.1 401"));
+    let _ = std::fs::remove_file(&db);
+    let _ = std::fs::remove_file(&snapshot);
+}

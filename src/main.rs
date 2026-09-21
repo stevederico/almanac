@@ -47,6 +47,27 @@ fn main() {
             }
         }
     }
+    // One-shot: drop the last plaintext copy of every write key. Off unless asked,
+    // because it ends the option of rolling back to a build older than 0.8.0.
+    if matches!(
+        std::env::var("SCRUB_LEGACY_KEYS").as_deref(),
+        Ok("1" | "true" | "yes")
+    ) {
+        match db.scrub_legacy_keys(Path::new(&cfg.db_path)) {
+            Ok(n) => println!(
+                "{}",
+                stringify(&Value::object(&[
+                    ("t", Value::String(now_iso())),
+                    ("msg", Value::String("scrub".into())),
+                    ("calendars", Value::Number(n as i64)),
+                ]))
+            ),
+            Err(e) => {
+                eprintln!("scrub: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     // Copies of the database on a timer; BACKUP_INTERVAL_HOURS=0 turns it off.
     spawn_backups(
         Path::new(&cfg.db_path).to_path_buf(),
