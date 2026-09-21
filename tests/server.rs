@@ -74,7 +74,7 @@ fn returns_html_for_browsers() {
     assert!(!html.contains("<link rel=\"stylesheet\""));
     assert!(!html.contains("{origin}"), "an unformatted placeholder leaked into the page");
     assert!(html.contains("example.test/v1/c/{id}/export"));
-    assert!(html.contains("og.png"));
+    assert!(html.contains("og.png?v="), "the share image URL must be versioned");
     assert!(html.contains("og:image"));
     assert!(html.contains("twitter:card"));
     assert!(!html.contains("Create Calendar"));

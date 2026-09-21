@@ -144,11 +144,16 @@ const PAGE: &str = r##"<!doctype html>
 </html>
 "##;
 
+/// Cache key for the share image. Cloudflare holds `/og.png` for hours and
+/// link-preview crawlers cache by URL, so a new image at the same URL keeps
+/// showing the old one. Bump this whenever `public/og.png` changes.
+const OG_VERSION: &str = "2";
+
 fn page(title: &str, body: &str, origin: &str) -> String {
     let image = if origin.is_empty() {
-        "/og.png".to_string()
+        format!("/og.png?v={OG_VERSION}")
     } else {
-        format!("{origin}/og.png")
+        format!("{origin}/og.png?v={OG_VERSION}")
     };
     let og_url = if origin.is_empty() {
         String::new()

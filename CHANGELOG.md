@@ -1,3 +1,8 @@
+0.14.0
+
+  Version share image
+  Bust stale preview
+
 0.13.0
 
   Redesign landing page
