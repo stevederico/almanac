@@ -36,7 +36,7 @@ pub fn llms_txt(base: &str) -> String {
         "",
         &format!("POST {origin}/calendars"),
         "Optional JSON body: { \"name\": \"Optional Title\" }",
-        "Returns id, subscribe URL, write URL, and key. Store the key. It is the write secret, shown once. A lost key cannot be recovered.",
+        "Returns id, subscribe URL, write URL, todos URLs, and key. Store the key. It is the write secret, shown once. A lost key cannot be recovered. The same key writes events and todos.",
         "",
         "Write (idempotent):",
         &format!("PUT {origin}/v1/c/{{id}}/events/{{uid}}"),
@@ -64,6 +64,15 @@ pub fn llms_txt(base: &str) -> String {
         "",
         "Subscribe: GET {subscribe} as text/calendar. No bearer. Use https, not webcal.",
         "Calendars poll. Refresh if a new event is missing.",
+        "",
+        "Todos (same key, own feed):",
+        &format!("PUT {origin}/v1/c/{{id}}/todos/{{uid}}"),
+        "{ \"title\": \"Buy milk\", \"due\": \"2026-10-01\", \"priority\": 1, \"tags\": [\"home\"] }",
+        "POST /v1/c/{id}/todos mints a uid. List: GET /v1/c/{id}/todos?status=open|done&tag=home",
+        "Get, PATCH, DELETE: /v1/c/{id}/todos/{uid}",
+        "title (required, <=512). description (<=4000). due: YYYY-MM-DD or ISO-8601 datetime, null clears. priority: 0-9 (1 highest, 0 none). done: true stamps completedAt, false clears it. tags: up to 10 of [a-z0-9_-], <=32 chars.",
+        "PUT keeps any field you leave out. Send null or \"\" to clear one. Wrong types are a 400.",
+        "Todos feed: GET the todos.subscribe URL from POST /calendars or GET /v1/c/{id}. text/calendar VTODOs. No bearer. Its token differs from the event feed.",
         "",
     ]
     .join("\n")
@@ -182,7 +191,7 @@ pub fn html_home(base: &str) -> String {
     )
 }
 
-pub fn html_created(row: &CalendarRow, key: &str, base: &str) -> String {
+pub fn html_created(row: &CalendarRow, key: &str, todos_subscribe: &str, base: &str) -> String {
     let creds = json_calendar(row, base);
     let subscribe = creds
         .get("subscribe")
@@ -200,6 +209,7 @@ pub fn html_created(row: &CalendarRow, key: &str, base: &str) -> String {
   <p>Save the key now. It is shown once and cannot be recovered.</p>
   <p><strong>Id</strong><br><code>{}</code></p>
   <p><strong>Subscribe</strong><br><code>{}</code></p>
+  <p><strong>Todos feed</strong><br><code>{}</code></p>
   <p><strong>Key</strong><br><code>{}</code></p>
   <p><strong>Write</strong><br><code>PUT {}/{{uid}}</code></p>
   <pre>Authorization: Bearer {}</pre>
@@ -207,6 +217,7 @@ pub fn html_created(row: &CalendarRow, key: &str, base: &str) -> String {
 "#,
             esc(&row.id),
             esc(subscribe),
+            esc(todos_subscribe),
             esc(key),
             esc(write),
             esc(key),

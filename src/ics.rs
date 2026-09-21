@@ -275,9 +275,150 @@ pub fn render_calendar(cal_name: &str, events: &[IcsEvent]) -> String {
     format!("{}\r\n", lines.join("\r\n"))
 }
 
+#[derive(Debug, Clone)]
+pub struct IcsTodo {
+    pub uid: String,
+    pub title: String,
+    pub description: String,
+    /// `""`, `YYYY-MM-DD`, or a UTC instant.
+    pub due: String,
+    pub done: bool,
+    pub completed_at: String,
+    pub priority: i64,
+    pub tags: Vec<String>,
+    pub sequence: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+fn vtodo(todo: &IcsTodo) -> String {
+    let mut lines = vec![
+        "BEGIN:VTODO".to_string(),
+        format!("UID:{}", todo.uid),
+        format!("DTSTAMP:{}", stamp(&todo.updated_at)),
+        format!("CREATED:{}", stamp(&todo.created_at)),
+        format!("LAST-MODIFIED:{}", stamp(&todo.updated_at)),
+        format!("SEQUENCE:{}", todo.sequence),
+        format!("SUMMARY:{}", escape_text(&todo.title)),
+    ];
+    if !todo.description.is_empty() {
+        lines.push(format!("DESCRIPTION:{}", escape_text(&todo.description)));
+    }
+    if crate::time::is_ymd(&todo.due) {
+        lines.push(format!(
+            "DUE;VALUE=DATE:{}",
+            to_ics_date(&todo.due).unwrap_or_default()
+        ));
+    } else if !todo.due.is_empty() {
+        lines.push(format!("DUE:{}", to_ics_utc(&todo.due).unwrap_or_default()));
+    }
+    if todo.priority > 0 {
+        lines.push(format!("PRIORITY:{}", todo.priority));
+    }
+    if !todo.tags.is_empty() {
+        // Each value is escaped; the commas between them are the separator.
+        let tags: Vec<String> = todo.tags.iter().map(|t| escape_text(t)).collect();
+        lines.push(format!("CATEGORIES:{}", tags.join(",")));
+    }
+    if todo.done {
+        lines.push("STATUS:COMPLETED".to_string());
+        lines.push("PERCENT-COMPLETE:100".to_string());
+        lines.push(format!("COMPLETED:{}", stamp(&todo.completed_at)));
+    } else {
+        lines.push("STATUS:NEEDS-ACTION".to_string());
+    }
+    lines.push("END:VTODO".to_string());
+    lines.into_iter().map(|l| fold_line(&l)).collect::<Vec<_>>().join("\r\n")
+}
+
+/// A subscribeable calendar holding only `VTODO`s.
+pub fn render_todos(cal_name: &str, todos: &[IcsTodo]) -> String {
+    let name_line = format!("X-WR-CALNAME:{}", escape_text(&format!("{cal_name} Todos")));
+    let mut lines: Vec<String> = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Steve//almanac//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        name_line.as_str(),
+    ]
+    .into_iter()
+    .map(fold_line)
+    .collect();
+    lines.extend(todos.iter().map(vtodo));
+    lines.push("END:VCALENDAR".into());
+    format!("{}\r\n", lines.join("\r\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn todo(title: &str) -> IcsTodo {
+        IcsTodo {
+            uid: "todo-1".into(),
+            title: title.into(),
+            description: String::new(),
+            due: String::new(),
+            done: false,
+            completed_at: String::new(),
+            priority: 0,
+            tags: vec![],
+            sequence: 0,
+            created_at: "2026-09-01T10:00:00.000Z".into(),
+            updated_at: "2026-09-02T11:30:00.000Z".into(),
+        }
+    }
+
+    #[test]
+    fn renders_an_open_todo() {
+        let ics = render_todos("Home", &[todo("Buy milk")]);
+        assert_eq!(
+            ics,
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Steve//almanac//EN\r\n\
+             CALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\nX-WR-CALNAME:Home Todos\r\n\
+             BEGIN:VTODO\r\nUID:todo-1\r\nDTSTAMP:20260902T113000Z\r\n\
+             CREATED:20260901T100000Z\r\nLAST-MODIFIED:20260902T113000Z\r\nSEQUENCE:0\r\n\
+             SUMMARY:Buy milk\r\nSTATUS:NEEDS-ACTION\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
+        );
+    }
+
+    #[test]
+    fn renders_due_priority_tags_and_completion() {
+        let mut t = todo("Ship it");
+        t.due = "2026-10-01".into();
+        t.priority = 1;
+        t.tags = vec!["work".into(), "q4".into()];
+        t.done = true;
+        t.completed_at = "2026-09-30T18:00:00.000Z".into();
+        let ics = render_todos("Home", &[t.clone()]);
+        assert!(ics.contains("DUE;VALUE=DATE:20261001\r\n"), "{ics}");
+        assert!(ics.contains("PRIORITY:1\r\n"));
+        assert!(ics.contains("CATEGORIES:work,q4\r\n"));
+        assert!(ics.contains("STATUS:COMPLETED\r\n"));
+        assert!(ics.contains("PERCENT-COMPLETE:100\r\n"));
+        assert!(ics.contains("COMPLETED:20260930T180000Z\r\n"));
+        assert!(!ics.contains("NEEDS-ACTION"));
+
+        t.due = "2026-10-01T16:00:00.000Z".into();
+        assert!(render_todos("Home", &[t]).contains("DUE:20261001T160000Z\r\n"));
+    }
+
+    #[test]
+    fn escapes_and_folds_text_and_never_breaks_a_line() {
+        let mut t = todo("Call Bob; then, Alice\\Eve\nnext");
+        t.description = "é".repeat(100);
+        let ics = render_todos("A;B", &[t]);
+        assert!(ics.contains("X-WR-CALNAME:A\\;B Todos\r\n"), "{ics}");
+        assert!(ics.contains("SUMMARY:Call Bob\\; then\\, Alice\\\\Eve\\nnext\r\n"), "{ics}");
+        for line in ics.split("\r\n") {
+            assert!(line.len() <= 75, "unfolded line of {} octets: {line}", line.len());
+        }
+        // A title cannot inject a property by carrying a newline.
+        let evil = render_todos("x", &[todo("a\r\nSTATUS:COMPLETED")]);
+        let statuses: Vec<&str> = evil.split("\r\n").filter(|l| l.starts_with("STATUS:")).collect();
+        assert_eq!(statuses, ["STATUS:NEEDS-ACTION"], "{evil}");
+    }
 
     #[test]
     fn escapes_ics_specials() {

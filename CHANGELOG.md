@@ -1,3 +1,11 @@
+0.9.0
+
+  Add todos
+  Add todos feed
+  Share write budget
+  Add todo cap
+  Add feeds table
+
 0.8.0
 
   Hash keys

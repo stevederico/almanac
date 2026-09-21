@@ -2,16 +2,17 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use crate::db::{
-    json_calendar, json_calendar_created, json_event, normalize_recurrence_id, parse_event_input, parse_event_patch,
-    parse_override_input, parse_recurrence_id, CalendarRow, Db,
+    json_calendar, json_calendar_created, json_event, normalize_recurrence_id, parse_event_input,
+    parse_event_patch, parse_override_input, parse_recurrence_id, CalendarRow, Db, EventRow,
 };
 use crate::http::{html_response, json_response, text_response, Request, Response};
-use crate::ics::{render_calendar, IcsEvent, IcsOverride};
+use crate::ics::{render_calendar, render_todos, IcsEvent, IcsOverride, IcsTodo};
 use crate::json::{parse as parse_json, stringify, Value};
 use crate::landing::{html_created, html_home, json_index, llms_txt};
 use crate::limits::{client_id, Limiter, Limits, HOUR_MS, MINUTE_MS};
 use crate::sha256::sha256_hex;
 use crate::time::now_iso;
+use crate::todos::{self, TodoRow};
 
 const OG_PNG: &[u8] = include_bytes!("../public/og.png");
 const MASCOT_WEBP: &[u8] = include_bytes!("../public/mascot.webp");
@@ -41,7 +42,7 @@ impl AppState {
 /// `.expect("db")` then panicked too: one bad request took every DB route down
 /// until a restart. The connection holds no half-applied state we rely on, so
 /// recovering the guard is safe.
-fn lock_db(state: &AppState) -> MutexGuard<'_, Db> {
+pub(crate) fn lock_db(state: &AppState) -> MutexGuard<'_, Db> {
     state.db.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -86,6 +87,10 @@ fn dispatch(state: &AppState, req: &Request) -> Response {
         }
         (m, p) if p.starts_with("/v1/c/") => scoped(state, req, m, &p["/v1/c/".len()..]),
         (m, "/v1/events") => events(state, req, "home", m, Target::Collection),
+        (m, "/v1/todos") => todos::route(state, req, "home", m, None),
+        (m, p) if let Some(uid) = p.strip_prefix("/v1/todos/") => {
+            item_route(state, req, "home", m, uid)
+        }
         (m, p) if let Some(rest) = p.strip_prefix("/v1/events/") => {
             events(state, req, "home", m, Target::of(rest))
         }
@@ -163,17 +168,23 @@ fn create_calendar(state: &AppState, req: &Request) -> Response {
         Ok(created) => created,
         Err(e) => return json_err(400, &e),
     };
-    drop(db);
     let base = request_base(req, &state.public_base);
+    let view = match calendar_view(&db, &saved, Some(&key), &base) {
+        Ok(v) => v,
+        Err(e) => return json_err(500, &e),
+    };
+    drop(db);
     if wants_html(req) || ctype.contains("application/x-www-form-urlencoded") {
-        return html_response(201, html_created(&saved, &key, &base));
+        let todos = view
+            .get("todos")
+            .and_then(|t| t.get("subscribe"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return html_response(201, html_created(&saved, &key, todos, &base));
     }
-    json_response(201, &stringify(&json_calendar_created(&saved, &key, &base)))
+    json_response(201, &stringify(&view))
 }
 
-/// The requested name, if any. An empty body still means "make me a default
-/// calendar", but a JSON body that is present and wrong is an error: quietly
-/// ignoring it would create a calendar the caller did not ask for.
 fn parse_calendar_name(ctype: &str, body: &[u8]) -> Result<Option<String>, String> {
     if ctype.contains("application/json") {
         let text = std::str::from_utf8(body).map_err(|_| "body must be valid JSON")?;
@@ -206,7 +217,7 @@ fn parse_calendar_name(ctype: &str, body: &[u8]) -> Result<Option<String>, Strin
     Ok(None)
 }
 
-fn urlencoding_decode(value: &str) -> String {
+pub(crate) fn urlencoding_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -236,21 +247,67 @@ fn hex_pair(hi: u8, lo: u8) -> Option<u8> {
     Some((digit(hi)? * 16 + digit(lo)?) as u8)
 }
 
+/// What a feed token resolved to, read under the lock.
+enum FeedBody {
+    Events(String, Vec<EventRow>),
+    Todos(String, Vec<TodoRow>),
+}
+
 fn feed(state: &AppState, token: &str) -> Response {
     let token = feed_token_of(token);
     // Read under the lock, render after it is released: rendering a large
     // calendar should not stall every other request.
-    let (name, events) = {
+    let body = {
         let db = lock_db(state);
-        let cal = match db.get_calendar_by_feed_token(&token) {
-            Ok(Some(cal)) if safe_equal(&token, &cal.feed_token) => cal,
-            _ => return json_err(404, "not found"),
-        };
-        match db.list_events(&cal.id) {
-            Ok(rows) => (cal.name, rows),
-            Err(e) => return json_err(500, &e),
+        match db.get_calendar_by_feed_token(&token) {
+            Ok(Some(cal)) if safe_equal(&token, &cal.feed_token) => match db.list_events(&cal.id) {
+                Ok(rows) => FeedBody::Events(cal.name, rows),
+                Err(e) => return json_err(500, &e),
+            },
+            _ => match db.feed_target(&token) {
+                Ok(Some((cal_id, kind))) if kind == "todos" => {
+                    let name = match db.get_calendar(&cal_id) {
+                        Ok(Some(cal)) => cal.name,
+                        _ => return json_err(404, "not found"),
+                    };
+                    match db.list_todos(&cal_id, None) {
+                        Ok(rows) => FeedBody::Todos(name, rows),
+                        Err(e) => return json_err(500, &e),
+                    }
+                }
+                Ok(_) => return json_err(404, "not found"),
+                Err(e) => return json_err(500, &e),
+            },
         }
     };
+    let (filename, ics) = match body {
+        FeedBody::Events(name, events) => ("calendar.ics", render_events(&name, events)),
+        FeedBody::Todos(name, todos) => {
+            let items: Vec<IcsTodo> = todos
+                .into_iter()
+                .map(|t| IcsTodo {
+                    uid: t.uid,
+                    title: t.title,
+                    description: t.description,
+                    due: t.due,
+                    done: t.done,
+                    completed_at: t.completed_at,
+                    priority: t.priority,
+                    tags: t.tags,
+                    sequence: t.sequence,
+                    created_at: t.created_at,
+                    updated_at: t.updated_at,
+                })
+                .collect();
+            ("todos.ics", render_todos(&name, &items))
+        }
+    };
+    text_response(200, "text/calendar; charset=utf-8", ics)
+        .header("cache-control", "no-cache")
+        .header("content-disposition", &format!("inline; filename=\"{filename}\""))
+}
+
+fn render_events(name: &str, events: Vec<EventRow>) -> String {
     let ics_events: Vec<IcsEvent> = events
         .into_iter()
         .map(|ev| IcsEvent {
@@ -285,13 +342,7 @@ fn feed(state: &AppState, token: &str) -> Response {
                 .collect(),
         })
         .collect();
-    text_response(
-        200,
-        "text/calendar; charset=utf-8",
-        render_calendar(&name, &ics_events),
-    )
-    .header("cache-control", "no-cache")
-    .header("content-disposition", "inline; filename=\"calendar.ics\"")
+    render_calendar(name, &ics_events)
 }
 
 fn scoped(state: &AppState, req: &Request, method: &str, rest: &str) -> Response {
@@ -307,7 +358,21 @@ fn scoped(state: &AppState, req: &Request, method: &str, rest: &str) -> Response
     if let Some(rest) = rest.strip_prefix("events/") {
         return events(state, req, id, method, Target::of(rest));
     }
+    if rest == "todos" {
+        return todos::route(state, req, id, method, None);
+    }
+    if let Some(uid) = rest.strip_prefix("todos/") {
+        return item_route(state, req, id, method, uid);
+    }
     json_err(404, "not found")
+}
+
+/// `todos/{uid}`. A uid never contains a slash, so anything deeper is a 404.
+fn item_route(state: &AppState, req: &Request, cal_id: &str, method: &str, uid: &str) -> Response {
+    if uid.is_empty() || uid.contains('/') {
+        return json_err(404, "not found");
+    }
+    todos::route(state, req, cal_id, method, Some(uid))
 }
 
 fn calendar_info(state: &AppState, req: &Request, id: &str) -> Response {
@@ -315,7 +380,32 @@ fn calendar_info(state: &AppState, req: &Request, id: &str) -> Response {
         return json_err(401, "unauthorized");
     };
     let base = request_base(req, &state.public_base);
-    json_response(200, &stringify(&json_calendar(&cal, &base)))
+    let view = calendar_view(&lock_db(state), &cal, None, &base);
+    match view {
+        Ok(v) => json_response(200, &stringify(&v)),
+        Err(e) => json_err(500, &e),
+    }
+}
+
+/// The calendar as the API shows it: its own fields plus where its todos are
+/// written and subscribed. `key` is only ever passed at creation.
+fn calendar_view(db: &Db, cal: &CalendarRow, key: Option<&str>, base: &str) -> Result<Value, String> {
+    let mut view = match key {
+        Some(key) => json_calendar_created(cal, key, base),
+        None => json_calendar(cal, base),
+    };
+    let origin = base.trim_end_matches('/');
+    let token = db.feed_token(&cal.id, "todos")?;
+    if let Value::Object(map) = &mut view {
+        map.insert(
+            "todos".into(),
+            Value::object(&[
+                ("write", Value::String(format!("{origin}/v1/c/{}/todos", cal.id))),
+                ("subscribe", Value::String(format!("{origin}/feed/{token}.ics"))),
+            ]),
+        );
+    }
+    Ok(view)
 }
 
 enum Target<'a> {
@@ -353,19 +443,10 @@ fn events(
     if !allowed {
         return json_err(404, "not found");
     }
-    let Some(cal) = authenticate(state, req, cal_id) else {
-        return json_err(401, "unauthorized");
+    let cal = match gate(state, req, cal_id, method) {
+        Ok(cal) => cal,
+        Err(res) => return res,
     };
-    if method != "GET" && !is_home(&cal) {
-        // After auth, so a stranger cannot spend someone else's budget.
-        if let Err(retry) = state.limiter.check(
-            &format!("w:{}", cal.id),
-            state.limits.writes_per_minute,
-            MINUTE_MS,
-        ) {
-            return too_many(retry);
-        }
-    }
     match (target, method) {
         (Target::Collection, "GET") => list_events(state, &cal),
         (Target::Collection, _) => write_event(state, req, &cal, None),
@@ -378,8 +459,41 @@ fn events(
     }
 }
 
+/// Authenticate, then charge the calendar's write budget. One budget covers
+/// every resource on a calendar, so events and todos share it.
+pub(crate) fn gate(
+    state: &AppState,
+    req: &Request,
+    cal_id: &str,
+    method: &str,
+) -> Result<CalendarRow, Response> {
+    let Some(cal) = authenticate(state, req, cal_id) else {
+        return Err(json_err(401, "unauthorized"));
+    };
+    if method != "GET" && !is_home(&cal) {
+        // After auth, so a stranger cannot spend someone else's budget.
+        if let Err(retry) = state.limiter.check(
+            &format!("w:{}", cal.id),
+            state.limits.writes_per_minute,
+            MINUTE_MS,
+        ) {
+            return Err(too_many(retry));
+        }
+    }
+    Ok(cal)
+}
+
+/// One query-string parameter, decoded.
+pub(crate) fn query_param(req: &Request, key: &str) -> Option<String> {
+    let query = req.path.split_once('?')?.1;
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        (urlencoding_decode(k) == key).then(|| urlencoding_decode(v))
+    })
+}
+
 /// The owner's own calendar is not subject to the caps meant for strangers.
-fn is_home(cal: &CalendarRow) -> bool {
+pub(crate) fn is_home(cal: &CalendarRow) -> bool {
     cal.id == "home"
 }
 
@@ -557,7 +671,7 @@ fn exceptions_full(
     (!exists).then(|| json_err(409, "too many exceptions on this event"))
 }
 
-fn parse_body(req: &Request) -> Result<Value, String> {
+pub(crate) fn parse_body(req: &Request) -> Result<Value, String> {
     let text = std::str::from_utf8(&req.body).map_err(|_| "body must be an object")?;
     if text.is_empty() {
         return Err("body must be an object".into());
@@ -630,7 +744,7 @@ fn redact_feed(path: &str) -> String {
     path.to_string()
 }
 
-fn json_err(status: u16, msg: &str) -> Response {
+pub(crate) fn json_err(status: u16, msg: &str) -> Response {
     json_response(
         status,
         &stringify(&Value::object(&[("error", Value::String(msg.into()))])),

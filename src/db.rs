@@ -95,7 +95,7 @@ pub struct OverrideInput {
 }
 
 pub struct Db {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl Db {
@@ -119,6 +119,7 @@ impl Db {
         )?;
         migrate_calendars(path, &conn)?;
         migrate_events(&conn)?;
+        crate::todos::migrate(&conn)?;
         Ok(Self { conn })
     }
 
@@ -951,7 +952,7 @@ fn column_names(db: &Connection, table: &str) -> Result<Vec<String>, String> {
     })
 }
 
-fn is_uid(value: &str) -> bool {
+pub(crate) fn is_uid(value: &str) -> bool {
     value.len() <= 200
         && !value.is_empty()
         && value

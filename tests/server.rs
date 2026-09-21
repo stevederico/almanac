@@ -926,3 +926,11 @@ fn a_row_with_no_hash_never_authenticates() {
         assert_eq!(send(&app, req).0, 401, "{header:?}");
     }
 }
+
+#[test]
+fn llms_txt_documents_todos() {
+    let (_, body, _) = send(&test_app(), Request::new("GET", "/llms.txt"));
+    let text = String::from_utf8(body).unwrap();
+    assert!(text.contains("/v1/c/{id}/todos"));
+    assert!(text.contains("todos.subscribe"));
+}

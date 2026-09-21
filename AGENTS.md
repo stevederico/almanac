@@ -25,7 +25,7 @@ Success `201`:
 }
 ```
 
-Store `id` and `key`. The key is the write secret. It is shown once and cannot be recovered; only its hash is stored.
+Store `id` and `key`. The key is the write secret. It is shown once and cannot be recovered; only its hash is stored. The same key writes events and todos. The response also has `todos.write` and `todos.subscribe`.
 
 ## Write
 
@@ -100,6 +100,36 @@ curl -sS -X DELETE "$WRITE/standup/overrides" \
   -H "Content-Type: application/json" \
   -d '{"recurrenceId":"2026-10-13T09:00:00"}'
 ```
+
+## Todos
+
+Same key, own endpoints, own feed.
+
+```bash
+curl -sS -X PUT "$BASE/v1/c/$ID/todos/milk" \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Buy milk","due":"2026-10-01","priority":1,"tags":["home"]}'
+curl -sS -X POST "$BASE/v1/c/$ID/todos" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"title":"Call Bob"}'
+curl -sS "$BASE/v1/c/$ID/todos?status=open&tag=home" -H "Authorization: Bearer $KEY"
+curl -sS -X PATCH "$BASE/v1/c/$ID/todos/milk" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"done":true}'
+curl -sS -X DELETE "$BASE/v1/c/$ID/todos/milk" -H "Authorization: Bearer $KEY"
+```
+
+`201` create or `200` update. `POST` mints a `todo-…` uid. `PUT` keeps fields you leave out; `null` or `""` clears one.
+
+| Field | Type | Notes |
+|---|---|---|
+| `title` | string | required, ≤512 |
+| `description` | string | ≤4000 |
+| `due` | string | `YYYY-MM-DD` or ISO-8601 datetime |
+| `priority` | int | 0-9, 1 is highest, 0 is none |
+| `done` | bool | `true` stamps `completedAt`, `false` clears it |
+| `tags` | string[] | ≤10, each `[a-z0-9_-]{1,32}`, lowercased |
+
+Open todos list first, then by due date. `GET /v1/c/{id}/todos` filters with `?status=open|done` and `?tag=`. Caps: 5000 todos per calendar (`409`). Events and todos share one write budget per calendar.
+
+Todos feed: `todos.subscribe` from create or `GET /v1/c/{id}`. `text/calendar` with `VTODO`s. Its token is not the event feed's token.
 
 Subscribe: paste `subscribe` in Calendar → File → New Calendar Subscription. Use `https://`, not `webcal://`.
 
