@@ -1,3 +1,7 @@
+0.27.0
+
+  Sync Cargo version
+
 0.26.0
 
   Add MIT license
