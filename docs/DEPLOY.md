@@ -1,8 +1,8 @@
 # Run
 
-Prod is `https://almanac.dottie.ai`: the `almanac` service on Railway, volume `/app/data`, behind dottie-proxy. It lives in the bixby project. A separate Railway project also named `almanac` is empty. Do not deploy there.
+Hosted prod is `https://almanac.dottie.ai`. To self-host, run the Dockerfile on any host with a persistent volume mounted at `/app/data`.
 
-`railway up` from this repo ships the current tree. Redeploying the existing build does not.
+On Railway, `railway up` from this repo ships the current tree. Redeploying the existing build does not.
 
 Prod answers `403` to an empty or default-curl User-Agent. Check with `-A "Mozilla/5.0 me"`: `/health`, then the boot lines in the Railway logs. A `home` sync log line means `AGENT_KEY`, `FEED_TOKEN`, or `CAL_NAME` drifted from the database.
 
@@ -24,7 +24,7 @@ The running process can still read the file, and so can anyone with the write ke
 
 On the next boot with `DB_KEY` set, a plaintext file is encrypted and the plaintext copy is deleted. A wrong key, or an encrypted file with no key, refuses to start and does not overwrite the file.
 
-Prod, when deploying this: set `DB_KEY` on the bixby `almanac` service first, then deploy, then check `/health` and that the volume file does not start with `SQLite format 3`.
+On a deployed service: set `DB_KEY` on the service first, then deploy, then check `/health` and that the volume file does not start with `SQLite format 3`.
 
 ## Backups (Railway or any host)
 

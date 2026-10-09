@@ -21,7 +21,7 @@ Contract: [AGENTS.md](AGENTS.md). Machine-readable: `GET /llms.txt`. Agent skill
 
 ## Prod
 
-The `almanac` service on Railway, volume `/app/data`, behind dottie-proxy. It lives in the bixby project. A separate Railway project also named `almanac` is empty. Do not deploy there. Steps: [docs/DEPLOY.md](docs/DEPLOY.md).
+Hosted at `https://almanac.dottie.ai`. To self-host, run the Dockerfile on any host with a persistent volume at `/app/data`. Steps: [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## Local
 

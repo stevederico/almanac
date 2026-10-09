@@ -1,3 +1,7 @@
+0.28.0
+
+  Generalize prod docs
+
 0.27.0
 
   Sync Cargo version
