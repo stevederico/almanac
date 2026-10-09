@@ -1,3 +1,7 @@
+0.26.0
+
+  Add MIT license
+
 0.25.0
 
   Add item seals
