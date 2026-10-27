@@ -1,3 +1,7 @@
+0.29.0
+
+  Fix SQLCipher image build
+
 0.28.0
 
   Generalize prod docs
